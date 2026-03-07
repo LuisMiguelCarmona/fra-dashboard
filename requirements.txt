@@ -3,4 +3,4 @@ pandas
 streamlit>=1.30
 plotly
 altair<5
-sklearn
+scikit-learn
