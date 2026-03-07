@@ -1,6 +1,9 @@
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
+from functions import run_pca
+
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -62,3 +65,81 @@ with col2:
 
 curve = build_curve_df(spot1y, spot2y, spot5y, spot10y)
 
+st.subheader("PCA Analysis")
+
+left_panel, middle_panel, right_panel = st.columns([0.4, 0.3, 0.3])
+with left_panel:
+    mode = st.radio("Select analysis period",["User defined Dates", "Predefined Periods"],horizontal=True)
+with middle_panel:
+    min_date = curve["closeDate"].min().date()
+    max_date = curve["closeDate"].max().date()
+    if mode == "User defined Dates":
+        d1, d2 = st.columns(2)
+
+        with d1:
+            start_date = st.date_input("Start date",value=min_date,min_value=min_date,max_value=max_date)
+
+        with d2:
+            end_date = st.date_input("End date",value=max_date,min_value=min_date,max_value=max_date)
+
+    else:
+        period = st.selectbox("Predefined period", ["3Y", "5Y", "10Y", "15Y", "Max Period"])
+
+        end_date = max_date
+        if period == "3Y": start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=3)).date()
+        elif period == "5Y": start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=5)).date()
+        elif period == "10Y": start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=10)).date()
+        elif period == "15Y": start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=15)).date()
+        else: start_date = min_date
+
+        if start_date < min_date:
+            start_date = min_date
+
+curve_pca = curve[(curve["closeDate"].dt.date >= start_date) & (curve["closeDate"].dt.date <= end_date)].copy()
+
+
+left_panel, right_panel = st.columns([0.3, 0.7])
+pca_df, loadings, explained = run_pca(curve_pca)
+
+with left_panel:
+    st.markdown("#### PCA Loadings")
+    st.dataframe(loadings, width="stretch")
+
+    st.markdown("#### Explained Variance")
+    explained_display = explained.copy()
+    explained_display["Explained Variance"] = explained_display["Explained Variance"].map(lambda x: f"{x:.2%}")
+    st.dataframe(explained_display, width="stretch")
+
+with right_panel:
+    fig_loadings = go.Figure()
+
+    fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Level"], name="Level"))
+    fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Slope"], name="Slope"))
+    fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Curvature"], name="Curvature"))
+
+    fig_loadings.update_layout(title="PCA Weights by Vertice",xaxis_title="Vertice",yaxis_title="Loading",barmode="group"
+    )
+
+    st.plotly_chart(fig_loadings, width="stretch")
+
+
+
+row_pc1, row_pc2, row_pc3 = st.columns(3)
+
+with row_pc1:
+    fig_pc1 = go.Figure()
+    fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z"], mode="lines", name="Level"))
+    fig_pc1.update_layout(title="Level Time Series", xaxis_title="Date", yaxis_title="Level")
+    st.plotly_chart(fig_pc1, width="stretch")
+
+with row_pc2:
+    fig_pc2 = go.Figure()
+    fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z"], mode="lines", name="Slope"))
+    fig_pc2.update_layout(title="Slope Time Series", xaxis_title="Date", yaxis_title="Slope")
+    st.plotly_chart(fig_pc2, width="stretch")
+
+with row_pc3:
+    fig_pc3 = go.Figure()
+    fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z"], mode="lines", name="Curvature"))
+    fig_pc3.update_layout(title="Curvature Time Series", xaxis_title="Date", yaxis_title="Curvature")
+    st.plotly_chart(fig_pc3, width="stretch")
