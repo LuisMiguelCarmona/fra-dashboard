@@ -1,36 +1,12 @@
-# ------------------- IMPORTS -------------------
-import numpy as np
-import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-import json
+from data_loader import load_json, build_curve_df, spread_fra
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
-
 st.title("FRA Spreads Dashboard - Case Study")
 
-# ------------------- FUNCTIONS -------------------
-def read_json(raw):
-    rows = []
-    for bucket in raw:
-        bucket_name = bucket.get("bucketName")
-        for point in bucket.get("curve", []):
-            rows.append({
-                "bucketName": bucket_name,
-                "closeDate": point.get("closeDate"),
-                "nominalRateValue": point.get("nominalRateValue")})
-    df = pd.DataFrame(rows)
-    df["closeDate"] = pd.to_datetime(df["closeDate"])
-    return df
-
-def load_json(path):
-    with open(path, "r") as f:
-        raw = json.load(f)
-    return read_json(raw)
-
 # ------------------- Loading Data -------------------
-
 spot1y      = load_json(r"data/Spot1y.json")
 spot2y      = load_json(r"data/Spot2y.json")
 spot5y      = load_json(r"data/Spot5y.json")
@@ -40,6 +16,7 @@ spread5y5y  = load_json(r"data/5y5y.json")
 
 # ------------------- Dashboard Structure -------------------
 
+# ---------- Basic Plots ----------
 control_left, control_right = st.columns(2)
 
 with control_left:
@@ -69,9 +46,7 @@ with col1:
     fig_left.update_layout(title="Spot Curve Evolution", yaxis_tickformat=".2%")
     st.plotly_chart(fig_left, width="stretch")
 
-
-spread = spread1y1y.copy()
-spread["spread"] = spread1y1y["nominalRateValue"] - spread5y5y["nominalRateValue"]
+spread = spread_fra(spread1y1y,spread5y5y)
 
 with col2:
     fig_right = go.Figure()
@@ -82,4 +57,8 @@ with col2:
     fig_right.update_layout(title="FRA Curve and Spread", yaxis_tickformat=".2%")
     st.plotly_chart(fig_right, width="stretch")
 
+
+# ---------- PCA ----------
+
+curve = build_curve_df(spot1y, spot2y, spot5y, spot10y)
 
