@@ -1,10 +1,11 @@
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-import statsmodels.api as sm
+from sklearn.linear_model import Ridge, Lasso
 from statsmodels.tsa.stattools import adfuller, kpss
+import statsmodels.api as sm
 
-
+# =================== PCA ===================
 def run_pca(curve_df):
     X = curve_df[["1y", "2y", "5y", "10y"]].dropna()
 
@@ -34,8 +35,10 @@ def add_rolling_zscore(df, cols, windows=[60, 120, 252]):
             rolling_mean = out[col].rolling(w).mean()
             rolling_std = out[col].rolling(w).std()
             out[f"{col}_z_{w}d"] = (out[col] - rolling_mean) / rolling_std
-
     return out
+
+
+# =================== Stationarity ===================
 
 def run_adf(series):
     s = pd.Series(series).dropna()
@@ -74,3 +77,23 @@ def stationarity_table(series, name="Spread"):
     hl = compute_half_life(series)
     table = pd.DataFrame({"Series": [name],"ADF Stat": [adf_stat],"ADF p-value": [adf_p],"KPSS Stat": [kpss_stat],"KPSS p-value": [kpss_p],"Half-Life": [hl]})
     return table
+
+
+# =================== Residual (OLS) ===================
+
+def compute_residual_spread(spread_df, pca_df):
+    df = spread_df.merge(pca_df[["closeDate", "Level", "Slope", "Curvature"]],on="closeDate",how="inner").dropna().copy()
+
+    X = sm.add_constant(df[["Level", "Slope", "Curvature"]])
+    y = df["spread"]
+    model = sm.OLS(y, X).fit()
+    df["fair_spread"] = model.predict(X)
+    df["residual_spread"] = df["spread"] - df["fair_spread"]
+
+    betas = pd.DataFrame({"Variable": model.params.index,"Beta": model.params.values})
+    stats = {"r2": model.rsquared,"adj_r2": model.rsquared_adj}
+
+    return df, betas, stats
+
+
+# =================== K-means ===================

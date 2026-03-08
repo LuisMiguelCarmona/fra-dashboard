@@ -2,8 +2,9 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
-from functions import run_pca, add_rolling_zscore
-from functions import stationarity_table
+from functions import run_pca, add_rolling_zscore   #PCA
+from functions import stationarity_table            #Stationarity
+from functions import compute_residual_spread       #residual
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -109,12 +110,12 @@ curve_pca = curve[(curve["closeDate"].dt.date >= start_date) & (curve["closeDate
 
 
 left_panel, right_panel = st.columns([0.3, 0.7])
-pca_df, loadings, explained = run_pca(curve_pca)
 
-if len(curve_pca.dropna()) < 10:
+if len(curve_pca.dropna()) < 60:
     st.warning("Not enough data in selected window for PCA. Select a bigger period.")
     st.stop()
 
+pca_df, loadings, explained = run_pca(curve_pca)
 pca_df = add_rolling_zscore(pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
 
 with left_panel:
@@ -203,11 +204,50 @@ stats_table = stationarity_table(filtered_spread["spread"], name="1Y1Y - 5Y5Y Sp
 st.subheader(f"Spread Stationarity Analysis ({start_date} to {end_date})")
 st.dataframe(stats_table, width="stretch")
 
+# ---------- Residual ----------
+
+residual_df, residual_betas, residual_stats = compute_residual_spread(filtered_spread, pca_df)
+st.subheader(f"Factor-Adjusted Spread (Residual) - {start_date} to {end_date}")
+latex = r"""
+Residual Spread:
+$$
+\text{Residual}_t = \text{Spread}_t - \widehat{\text{Spread}}_t
+$$
+where
+$$
+\widehat{\text{Spread}}_t = \alpha + \beta_1 \text{Level}_t + \beta_2 \text{Slope}_t + \beta_3 \text{Curvature}_t
+$$
+"""
+st.markdown(latex)
+
+left_res, right_res = st.columns([0.35, 0.65])
+
+with left_res:
+    st.dataframe(residual_betas, width="stretch")
+    fit_table = pd.DataFrame({"Metric": ["R-squared", "Adj. R-squared"],"Value": [residual_stats["r2"], residual_stats["adj_r2"]]})
+    st.dataframe(fit_table, width="stretch")
+
+with right_res:
+    fig_res = go.Figure()
+    fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["spread"],mode="lines",name="Actual Spread"))
+    fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["fair_spread"],mode="lines",name="Fair Spread"))
+    fig_res.update_layout(title="Actual vs Fair Spread",xaxis_title="Date",yaxis_title="Spread", yaxis_tickformat=".2%")
+    st.plotly_chart(fig_res, width="stretch")
 
 
-# residual_spread = regress(pca_curve, components)
-# stats_table_residual = stationarity_table(residual_spread["spread"], name="1Y1Y - 5Y5Y Residual Spread")
+fig_residual = go.Figure()
+fig_residual.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["residual_spread"],mode="lines",name="Residual Spread"))
+fig_residual.update_layout(title="Residual Spread Time Series",xaxis_title="Date",yaxis_title="Residual Spread")
+st.plotly_chart(fig_residual, width="stretch")
 
-# st.subheader(f"Residual Stationarity Analysis ({min_date} to {max_date})")
-# st.dataframe(stats_table, width="stretch")
+residual_stats_table = stationarity_table(residual_df["residual_spread"],name="1Y1Y - 5Y5Y Residual Spread")
+
+st.subheader(f"Residual Spread Stationarity Analysis ({start_date} to {end_date})")
+st.dataframe(residual_stats_table, width="stretch")
+
+
+st.markdown("The residual helps us answer if the 1y1y-5y5y is high or low given today’s level, slope, and curvature")
+
+
+
 

@@ -20,7 +20,12 @@ def load_json(path):
     return read_json(raw)
 
 def build_curve_df(spot1y, spot2y, spot5y, spot10y):
-    return pd.DataFrame({"closeDate": spot1y["closeDate"],"1y": spot1y["nominalRateValue"],"2y": spot2y["nominalRateValue"],"5y": spot5y["nominalRateValue"],"10y": spot10y["nominalRateValue"]})
+    dfs = [spot1y.rename(columns={"nominalRateValue": "1y"}),spot2y.rename(columns={"nominalRateValue": "2y"}),
+        spot5y.rename(columns={"nominalRateValue": "5y"}),spot10y.rename(columns={"nominalRateValue": "10y"})]
+    df = dfs[0][["closeDate", "1y"]]
+    for d in dfs[1:]:
+        df = df.merge(d[["closeDate", d.columns[-1]]], on="closeDate", how="inner")
+    return df.sort_values("closeDate").reset_index(drop=True)
 
 def spread_fra(curve1, curve2):
     spread = curve1.copy()
