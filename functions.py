@@ -1,9 +1,13 @@
 import pandas as pd
 import numpy as np
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge, Lasso
 from statsmodels.tsa.stattools import adfuller, kpss
 import statsmodels.api as sm
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+
 
 # =================== PCA ===================
 def run_pca(curve_df):
@@ -97,3 +101,47 @@ def compute_residual_spread(spread_df, pca_df):
 
 
 # =================== K-means ===================
+
+def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, 
+                     random_state=42):
+    out = df.copy()
+
+    X = out[["closeDate"] + feature_cols].dropna().copy()
+    idx = X.index
+    train_end = pd.to_datetime('2017-12-31')
+    train_mask = X["closeDate"] <= train_end
+    X_train = X.loc[train_mask, feature_cols]
+    X_full  = X[feature_cols]
+
+    scaler = StandardScaler()
+    scaler.fit(X_train)
+    X_train_scaled = scaler.transform(X_train)
+    X_full_scaled  = scaler.transform(X_full)
+
+    if model_type == "kmeans":
+        model = KMeans(n_clusters=n_regimes, n_init=20, random_state=random_state)
+        model.fit(X_train_scaled)
+        labels = model.predict(X_full_scaled)
+        out.loc[idx, "regime"] = labels
+        out.loc[idx, "is_train"] = train_mask.values
+        centers = pd.DataFrame(
+            scaler.inverse_transform(model.cluster_centers_),
+            columns=feature_cols)
+        centers["regime"] = range(n_regimes)
+
+    elif model_type == "gmm":
+        model = GaussianMixture(n_components=n_regimes, random_state=random_state)
+        model.fit(X_train_scaled)
+        labels = model.predict(X_full_scaled)
+        probs  = model.predict_proba(X_full_scaled)
+        out.loc[idx, "regime"] = labels
+        out.loc[idx, "is_train"] = train_mask.values
+        for i in range(n_regimes):
+            out.loc[idx, f"prob_regime_{i}"] = probs[:, i]
+        centers = pd.DataFrame(scaler.inverse_transform(model.means_),columns=feature_cols)
+        centers["regime"] = range(n_regimes)
+
+    else:
+        raise ValueError("model_type must be 'kmeans' or 'gmm'")
+
+    return out, centers, model, scaler
