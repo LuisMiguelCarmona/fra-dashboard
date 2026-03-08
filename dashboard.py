@@ -264,7 +264,7 @@ with left_regime:
 with right_regime:
     n_regimes = st.selectbox("Number of regimes", [2, 3, 4, 5], index=1)
 
-regime_df, centers, model, scaler = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
+regime_df, centers, model = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
 
 st.subheader("Regime Timeline")
 fig_regime = go.Figure()

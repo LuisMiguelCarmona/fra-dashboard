@@ -102,8 +102,7 @@ def compute_residual_spread(spread_df, pca_df):
 
 # =================== K-means ===================
 
-def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, 
-                     random_state=42):
+def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, random_state=42):
     out = df.copy()
 
     X = out[["closeDate"] + feature_cols].dropna().copy()
@@ -144,4 +143,4 @@ def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3,
     else:
         raise ValueError("model_type must be 'kmeans' or 'gmm'")
 
-    return out, centers, model, scaler
+    return out, centers, model
