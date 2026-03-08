@@ -100,7 +100,7 @@ def compute_residual_spread(spread_df, pca_df):
     return df, betas, stats
 
 
-# =================== K-means ===================
+# =================== K-means & GMM ===================
 
 def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, random_state=42):
     out = df.copy()

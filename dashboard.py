@@ -5,7 +5,7 @@ from data_loader import load_json, build_curve_df, spread_fra
 from functions import run_pca, add_rolling_zscore   #PCA
 from functions import stationarity_table            #Stationarity
 from functions import compute_residual_spread       #residual
-from functions import run_regime_model              #regime clustering
+#from functions import run_regime_model              #regime clustering
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -264,20 +264,20 @@ with left_regime:
 with right_regime:
     n_regimes = st.selectbox("Number of regimes", [2, 3, 4, 5], index=1)
 
-regime_df, centers, model = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
+# regime_df, centers, model = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
 
-st.subheader("Regime Timeline")
-fig_regime = go.Figure()
-fig_regime.add_trace(go.Scatter(x=regime_df["closeDate"],y=regime_df["regime"],mode="markers",marker=dict(size=6),name="Regime"))
-fig_regime.update_layout(title="Regime Classification Through Time",xaxis_title="Date",yaxis_title="Regime")
-st.plotly_chart(fig_regime, width="stretch")
+# st.subheader("Regime Timeline")
+# fig_regime = go.Figure()
+# fig_regime.add_trace(go.Scatter(x=regime_df["closeDate"],y=regime_df["regime"],mode="markers",marker=dict(size=6),name="Regime"))
+# fig_regime.update_layout(title="Regime Classification Through Time",xaxis_title="Date",yaxis_title="Regime")
+# st.plotly_chart(fig_regime, width="stretch")
 
-cur_reg = int(regime_df["regime"].dropna().iloc[-1])
-st.subheader(f"Current Regime: {cur_reg}")
+# cur_reg = int(regime_df["regime"].dropna().iloc[-1])
+# st.subheader(f"Current Regime: {cur_reg}")
 
-st.subheader("Regime Summary")
-summary = regime_df.groupby(["is_train", "regime"]).agg(Count=("regime", "size"),Avg_Residual=("residual_spread", "mean"),Std_Residual=("residual_spread", "std")).reset_index()
-st.dataframe(summary, width="stretch")
+# st.subheader("Regime Summary")
+# summary = regime_df.groupby(["is_train", "regime"]).agg(Count=("regime", "size"),Avg_Residual=("residual_spread", "mean"),Std_Residual=("residual_spread", "std")).reset_index()
+# st.dataframe(summary, width="stretch")
 
-st.subheader("Regime Centers")
-st.dataframe(centers, width="stretch")
+# st.subheader("Regime Centers")
+# st.dataframe(centers, width="stretch")
