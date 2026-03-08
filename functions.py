@@ -83,19 +83,32 @@ def stationarity_table(series, name="Spread"):
     return table
 
 
-# =================== Residual (OLS) ===================
+# =================== Residual (OLS Train/Test) ===================
 
-def compute_residual_spread(spread_df, pca_df):
+def compute_residual_spread_oos(spread_df,pca_df,train_end="2017-12-31"):
     df = spread_df.merge(pca_df[["closeDate", "Level", "Slope", "Curvature"]],on="closeDate",how="inner").dropna().copy()
+    train_end = pd.to_datetime(train_end)
+    df["is_train"] = df["closeDate"] <= train_end
+    train_df = df[df["is_train"]].copy()
+    test_df = df[~df["is_train"]].copy()
 
-    X = sm.add_constant(df[["Level", "Slope", "Curvature"]])
-    y = df["spread"]
-    model = sm.OLS(y, X).fit()
-    df["fair_spread"] = model.predict(X)
+    if train_df.empty:
+        raise ValueError("Training sample is empty for residual OLS.")
+    if test_df.empty:
+        raise ValueError("Test sample is empty for residual OLS.")
+
+    X_train = sm.add_constant(train_df[["Level", "Slope", "Curvature"]])
+    y_train = train_df["spread"]
+
+    model = sm.OLS(y_train, X_train).fit()
+
+    X_full = sm.add_constant(df[["Level", "Slope", "Curvature"]], has_constant="add")
+    df["fair_spread"] = model.predict(X_full)
     df["residual_spread"] = df["spread"] - df["fair_spread"]
 
     betas = pd.DataFrame({"Variable": model.params.index,"Beta": model.params.values})
-    stats = {"r2": model.rsquared,"adj_r2": model.rsquared_adj}
+
+    stats = {"r2_train": model.rsquared,"adj_r2_train": model.rsquared_adj}
 
     return df, betas, stats
 
