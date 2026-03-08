@@ -2,8 +2,8 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
-from functions import run_pca
-
+from functions import run_pca, add_rolling_zscore
+from functions import stationarity_table
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -60,6 +60,15 @@ with col2:
     fig_right.update_layout(title="FRA Curve and Spread", yaxis_tickformat=".2%")
     st.plotly_chart(fig_right, width="stretch")
 
+# ---------- Stationarity ----------
+
+stats_table = stationarity_table(spread["spread"], name="1Y1Y - 5Y5Y Spread")
+startdate_spread = spread["closeDate"].min().date()
+enddate_spread = spread["closeDate"].max().date()
+st.subheader(f"Spread Stationarity Analysis ({startdate_spread} to {enddate_spread})")
+st.dataframe(stats_table, width="stretch")
+st.caption("The raw spread shows mixed evidence of stationarity. ADF suggests stationarity, while KPSS rejects level stationarity. The spread may be mean-reverting, but not cleanly stationary over the full sample.")
+
 
 # ---------- PCA ----------
 
@@ -69,21 +78,19 @@ st.subheader("PCA Analysis")
 
 left_panel, middle_panel, right_panel = st.columns([0.4, 0.3, 0.3])
 with left_panel:
-    mode = st.radio("Select analysis period",["User defined Dates", "Predefined Periods"],horizontal=True)
+    mode = st.radio("Select analysis period",["Predefined Periods", "User defined Dates"],horizontal=True)
 with middle_panel:
     min_date = curve["closeDate"].min().date()
     max_date = curve["closeDate"].max().date()
     if mode == "User defined Dates":
         d1, d2 = st.columns(2)
-
         with d1:
             start_date = st.date_input("Start date",value=min_date,min_value=min_date,max_value=max_date)
-
         with d2:
             end_date = st.date_input("End date",value=max_date,min_value=min_date,max_value=max_date)
 
     else:
-        period = st.selectbox("Predefined period", ["3Y", "5Y", "10Y", "15Y", "Max Period"])
+        period = st.selectbox("Predefined period", ["3Y", "5Y", "10Y", "15Y", "Max Period"], index = 4)
 
         end_date = max_date
         if period == "3Y": start_date = (pd.Timestamp(end_date) - pd.DateOffset(years=3)).date()
@@ -95,17 +102,24 @@ with middle_panel:
         if start_date < min_date:
             start_date = min_date
 
+with right_panel:
+    st.markdown(f"<div style='text-align: right;'>{start_date} to {end_date}</div>", unsafe_allow_html=True)
+
 curve_pca = curve[(curve["closeDate"].dt.date >= start_date) & (curve["closeDate"].dt.date <= end_date)].copy()
 
 
 left_panel, right_panel = st.columns([0.3, 0.7])
 pca_df, loadings, explained = run_pca(curve_pca)
 
+if len(curve_pca.dropna()) < 10:
+    st.warning("Not enough data in selected window for PCA. Select a bigger period.")
+    st.stop()
+
+pca_df = add_rolling_zscore(pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
+
 with left_panel:
-    st.markdown("#### PCA Loadings")
     st.dataframe(loadings, width="stretch")
 
-    st.markdown("#### Explained Variance")
     explained_display = explained.copy()
     explained_display["Explained Variance"] = explained_display["Explained Variance"].map(lambda x: f"{x:.2%}")
     st.dataframe(explained_display, width="stretch")
@@ -117,29 +131,83 @@ with right_panel:
     fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Slope"], name="Slope"))
     fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Curvature"], name="Curvature"))
 
-    fig_loadings.update_layout(title="PCA Weights by Vertice",xaxis_title="Vertice",yaxis_title="Loading",barmode="group"
-    )
+    fig_loadings.update_layout(title="PCA Weights by Vertex",xaxis_title="Vertex",yaxis_title="Loading",barmode="group")
 
     st.plotly_chart(fig_loadings, width="stretch")
 
 
+left_panel, middle_panel, right_panel = st.columns([0.6, 0.2, 0.2])
+with left_panel:
+    option = st.radio("How would you like to see the results?",key='visibility',options=["Principal Components", "Z-Scored Principal Components", "Rolling z-score window"],horizontal=True)
+with middle_panel:
+    z_window = None
+    if option == 'Rolling z-score window':
+        z_window = st.selectbox("Rolling z-score window",["60d", "120d", "252d"],index=0)
 
-row_pc1, row_pc2, row_pc3 = st.columns(3)
-
+row_pc1, row_pc2, row_pc3 = st.columns([0.33, 0.33, 0.33])
 with row_pc1:
     fig_pc1 = go.Figure()
-    fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z"], mode="lines", name="Level"))
+    if option == 'Principal Components':
+        fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level"], mode="lines", name="Level"))
+    elif option == 'Z-Scored Principal Components':
+        fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z"], mode="lines", name="Z-Score"))
+    elif option == 'Rolling z-score window':
+        if z_window == "60d":
+            fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z_60d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "120d":
+            fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z_120d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "252d":
+            fig_pc1.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Level_z_252d"], mode="lines", name="Rolling Z-Score"))
     fig_pc1.update_layout(title="Level Time Series", xaxis_title="Date", yaxis_title="Level")
     st.plotly_chart(fig_pc1, width="stretch")
 
 with row_pc2:
     fig_pc2 = go.Figure()
-    fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z"], mode="lines", name="Slope"))
+    if option == 'Principal Components':
+        fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope"], mode="lines", name="Slope"))
+    elif option == 'Z-Scored Principal Components':
+        fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z"], mode="lines", name="Z-Score"))
+    elif option == 'Rolling z-score window':
+        if z_window == "60d":
+            fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z_60d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "120d":
+            fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z_120d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "252d":
+            fig_pc2.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Slope_z_252d"], mode="lines", name="Rolling Z-Score"))
     fig_pc2.update_layout(title="Slope Time Series", xaxis_title="Date", yaxis_title="Slope")
     st.plotly_chart(fig_pc2, width="stretch")
 
 with row_pc3:
     fig_pc3 = go.Figure()
-    fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z"], mode="lines", name="Curvature"))
+    if option == 'Principal Components':
+        fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature"], mode="lines", name="Curvature"))
+    elif option == 'Z-Scored Principal Components':
+        fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z"], mode="lines", name="Z-Score"))
+    elif option == 'Rolling z-score window':
+        if z_window == "60d":
+            fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z_60d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "120d":
+            fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z_120d"], mode="lines", name="Rolling Z-Score"))
+        if z_window == "252d":
+            fig_pc3.add_trace(go.Scatter(x=pca_df["closeDate"], y=pca_df["Curvature_z_252d"], mode="lines", name="Rolling Z-Score"))
     fig_pc3.update_layout(title="Curvature Time Series", xaxis_title="Date", yaxis_title="Curvature")
     st.plotly_chart(fig_pc3, width="stretch")
+
+
+# ---------- Stationarity ----------
+
+filtered_spread = spread[(spread["closeDate"].dt.date >= start_date) & (spread["closeDate"].dt.date <= end_date)].copy()
+
+stats_table = stationarity_table(filtered_spread["spread"], name="1Y1Y - 5Y5Y Spread")
+
+st.subheader(f"Spread Stationarity Analysis ({start_date} to {end_date})")
+st.dataframe(stats_table, width="stretch")
+
+
+
+# residual_spread = regress(pca_curve, components)
+# stats_table_residual = stationarity_table(residual_spread["spread"], name="1Y1Y - 5Y5Y Residual Spread")
+
+# st.subheader(f"Residual Stationarity Analysis ({min_date} to {max_date})")
+# st.dataframe(stats_table, width="stretch")
+

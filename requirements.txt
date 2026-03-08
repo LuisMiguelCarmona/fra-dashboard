@@ -4,3 +4,5 @@ streamlit>=1.30
 plotly
 altair<5
 scikit-learn
+statsmodels
+scipy
