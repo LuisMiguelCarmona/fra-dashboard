@@ -3,10 +3,16 @@ import plotly.graph_objects as go
 import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
 from functions import run_pca, add_rolling_zscore   #PCA
-from functions import stationarity_table            #Stationarity
+from functions import run_pca_training          #PCA
+from functions import stationarity_table                #Stationarity
 from functions import compute_residual_spread_oos   #residual
 from functions import run_regime_model              #Regime Model
 from functions import compute_half_life, compute_trading_signal #Trading
+from functions import compute_trading_signal_regime #Trading
+from functions import compute_regime_zscore #Trading
+from functions import run_backtest
+TRAINING_DATE = pd.to_datetime('2017-12-31')
+
 
 # ------------------- Basic Titles -------------------
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -69,7 +75,7 @@ stats_table = stationarity_table(spread["spread"], name="1Y1Y - 5Y5Y Spread")
 startdate_spread = spread["closeDate"].min().date()
 enddate_spread = spread["closeDate"].max().date()
 st.subheader(f"Spread Stationarity Analysis ({startdate_spread} to {enddate_spread})")
-st.dataframe(stats_table, width="stretch")
+st.dataframe(stats_table, width="stretch", hide_index=True)
 st.caption("The raw spread shows mixed evidence of stationarity. ADF suggests stationarity, while KPSS rejects level stationarity. The spread may be mean-reverting, but not cleanly stationary over the full sample.")
 
 st.divider()
@@ -121,11 +127,11 @@ pca_df, loadings, explained = run_pca(curve_pca)
 pca_df = add_rolling_zscore(pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
 
 with left_panel:
-    st.dataframe(loadings, width="stretch")
+    st.dataframe(loadings, width="stretch", hide_index=True)
 
     explained_display = explained.copy()
     explained_display["Explained Variance"] = explained_display["Explained Variance"].map(lambda x: f"{x:.2%}")
-    st.dataframe(explained_display, width="stretch")
+    st.dataframe(explained_display, width="stretch", hide_index=True)
 
 with right_panel:
     fig_loadings = go.Figure()
@@ -204,10 +210,7 @@ filtered_spread = spread[(spread["closeDate"].dt.date >= start_date) & (spread["
 stats_table = stationarity_table(filtered_spread["spread"], name="1Y1Y - 5Y5Y Spread")
 
 st.subheader(f"Spread Stationarity Analysis ({start_date} to {end_date})")
-st.dataframe(stats_table, width="stretch")
-
-
-
+st.dataframe(stats_table, width="stretch", hide_index=True)
 
 st.divider()
 
@@ -217,7 +220,7 @@ st.divider()
 # ---------- Residual ----------
 st.subheader(f"Signal Construction — Using Full Sample. The results bellow are not period sensitive according to the assigned period above")
 
-full_pca_df, full_loadings, full_explained = run_pca(curve)
+full_pca_df, full_loadings, full_explained = run_pca_training(curve, train_end="2017-12-31")
 full_pca_df = add_rolling_zscore(full_pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
 
 residual_df, residual_betas, residual_stats = compute_residual_spread_oos(spread, full_pca_df)
@@ -239,9 +242,9 @@ st.markdown(latex)
 left_res, right_res = st.columns([0.35, 0.65])
 
 with left_res:
-    st.dataframe(residual_betas, width="stretch")
+    st.dataframe(residual_betas, width="stretch", hide_index=True)
     fit_table = pd.DataFrame({"Metric": ["Train R-squared", "Train Adj. R-squared"],"Value": [residual_stats["r2_train"], residual_stats["adj_r2_train"]]})
-    st.dataframe(fit_table, width="stretch")
+    st.dataframe(fit_table, width="stretch", hide_index=True)
 
 with right_res:
     fig_res = go.Figure()
@@ -259,7 +262,7 @@ st.plotly_chart(fig_residual, width="stretch")
 residual_stats_table = stationarity_table(residual_df["residual_spread"],name="1Y1Y - 5Y5Y Residual Spread")
 
 st.subheader(f"Residual Spread Stationarity Analysis ({startdate_spread} to {enddate_spread})")
-st.dataframe(residual_stats_table, width="stretch")
+st.dataframe(residual_stats_table, width="stretch", hide_index=True)
 
 st.markdown("The residual helps us answer if the 1y1y-5y5y is high or low given today’s level, slope, and curvature. To support this analysis we will add a regime clustering.")
 
@@ -301,10 +304,10 @@ st.subheader(f"Current Regime: {cur_reg}")
 
 st.subheader("Regime Summary")
 summary = regime_df.groupby(["is_train", "regime"]).agg(Count=("regime", "size"),Avg_Residual=("residual_spread", "mean"),Std_Residual=("residual_spread", "std")).reset_index()
-st.dataframe(summary, width="stretch")
+st.dataframe(summary, width="stretch", hide_index=True)
 
 st.subheader("Regime Centers")
-st.dataframe(centers, width="stretch")
+st.dataframe(centers[['regime', 'Level', 'Slope', 'Curvature', 'residual_spread']], width="stretch", hide_index=True)
 
 
 st.divider()
@@ -313,31 +316,19 @@ st.divider()
 # ---------- Trading Residuals ----------
 
 st.subheader('Trading the residual')
+st.markdown('A simple trade idea can be made, lets analyse the z-score of the serie to create signals for trading.')
 
-hl = compute_half_life(residual_df["residual_spread"])
-
-default_window = int(round(hl))
-
-ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
-
-with ctrl1:
-    z_window = st.slider("Z-Score Window (days)", min_value=10, max_value=120, value=default_window, step=1)
-with ctrl2:
-    entry_threshold = st.slider("Entry Threshold (σ)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
-with ctrl3:
-    exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
-with ctrl4:
-    stop_loss = st.slider("Stop-Loss (σ)", min_value=2.0, max_value=5.0, value=3.0, step=0.25)
-
+entry_threshold, exit_band, stop_loss = 1.5, 0.25, 3
+z_window = int(compute_half_life(residual_df["residual_spread"]))
 
 signal_df = compute_trading_signal(residual_df[["closeDate", "residual_spread"]].copy(),z_window=z_window,
                                    entry_long=-entry_threshold,entry_short=entry_threshold,exit_band=exit_band,stop_loss=stop_loss)
 
 fig_signal = go.Figure()
 
-st.markdown("Trading the residual")
-st.markdown("")
-st.markdown("")
+st.markdown("The idea consists of buying everytime the spread is under a certain treshold and selling everytime the spread is over a certain treshold.")
+st.markdown("Used parameters: ")
+st.markdown(f"Entry treshold (σ) = {entry_threshold}, Exit band (σ) = {exit_band}, Stop Loss (σ) = {stop_loss}")
 
 fig_signal.add_trace(go.Scatter(x=signal_df["closeDate"], y=signal_df["residual_z"],mode="lines", name="Residual Z-Score"))
 fig_signal.add_hline(y=entry_threshold,  line_dash="dash", line_color="red")
@@ -355,6 +346,105 @@ fig_pos = go.Figure()
 colors = signal_df["position"].map({1.0: "green", -1.0: "red", 0.0: "gray"})
 fig_pos.add_trace(go.Bar(x=signal_df["closeDate"], y=signal_df["position"],marker_color=colors, name="Position"))
 fig_pos.update_layout(title="Position Over Time",xaxis_title="Date", yaxis_title="Position",height=300, bargap=0)
+st.plotly_chart(fig_pos, use_container_width=True)
+
+
+st.subheader('Trading the residual with Regimes')
+st.markdown('Now, lets make an improvement, we will trade the residual using different z-score of each regime. This is important so we can analyse each period characteristics.')
+
+trade_input = regime_df[["closeDate", "regime", "residual_spread"]].copy()
+trade_input, regime_stats = compute_regime_zscore(trade_input, train_end="2017-12-31")
+
+st.markdown("Residual distribution per regime (training sample)")
+display_stats = regime_stats.copy()
+display_stats["regime_mean_bps"] = (display_stats["regime_mean"] * 10000).round(2)
+display_stats["regime_std_bps"]  = (display_stats["regime_std"] * 10000).round(2)
+st.dataframe(display_stats[["regime", "regime_mean_bps", "regime_std_bps"]], hide_index=True)
+
+
+all_regimes = sorted(trade_input["regime"].dropna().unique().astype(int).tolist())
+
+ctrl_row1_c1, ctrl_row1_c2, ctrl_row1_c3 = st.columns(3)
+
+with ctrl_row1_c1:
+    entry_threshold = st.slider("Entry (σ)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+with ctrl_row1_c2:
+    exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.5, value=0.25, step=0.05)
+with ctrl_row1_c3:
+    slippage_bps = st.slider("Slippage per trade (bps)", min_value=0.0, max_value=20.0, value=0.0, step=1.0)
+
+ctrl_row2_c1, ctrl_row2_c2 = st.columns(2)
+
+with ctrl_row2_c1:
+    use_stop = st.checkbox("Enable Stop-Loss", value=False)
+    if use_stop:
+        stop_loss = st.slider("Stop-Loss (σ)", min_value=2.0, max_value=5.0, value=3.0, step=0.25)
+    else:
+        stop_loss = None
+
+with ctrl_row2_c2:
+    st.markdown("Tradeable Regimes")
+    tradeable = []
+    cols = st.columns(len(all_regimes))
+    for i, reg in enumerate(all_regimes):
+        with cols[i]:
+            if st.checkbox(f"Regime {reg}", value=True, key=f"regime_{reg}"):
+                tradeable.append(reg)
+
+tradeable_regimes = tradeable if len(tradeable) < len(all_regimes) else None
+
+signal_df = compute_trading_signal_regime(trade_input,entry_long=-entry_threshold,entry_short=entry_threshold,exit_band=exit_band,stop_loss=stop_loss,tradeable_regimes=tradeable_regimes)
+
+fig_signal = go.Figure()
+
+fig_signal.add_trace(go.Scatter(x=signal_df["closeDate"], y=signal_df["regime_z"], mode="lines", name="Regime Z-Score"))
+fig_signal.add_hline(y=entry_threshold,  line_dash="dash", line_color="red")
+fig_signal.add_hline(y=-entry_threshold, line_dash="dash", line_color="green")
+fig_signal.add_hline(y=exit_band,  line_dash="dot", line_color="gray")
+fig_signal.add_hline(y=-exit_band, line_dash="dot", line_color="gray")
+fig_signal.add_hline(y=0, line_color="lightgray", line_width=0.5)
+if stop_loss is not None:
+    fig_signal.add_hline(y=stop_loss,  line_dash="dashdot", line_color="black")
+    fig_signal.add_hline(y=-stop_loss, line_dash="dashdot", line_color="black")
+
+tick_vals   = [entry_threshold, -entry_threshold, exit_band, -exit_band]
+tick_labels = [f"Short +{entry_threshold}σ", f"Long −{entry_threshold}σ",f"Exit +{exit_band}σ", f"Exit −{exit_band}σ"]
+if stop_loss is not None:
+    tick_vals   += [stop_loss, -stop_loss]
+    tick_labels += [f"Stop +{stop_loss}σ", f"Stop −{stop_loss}σ"]
+
+
+fig_signal.update_layout(title="Regime-Conditioned Z-Score with Trading Bands",xaxis_title="Date", yaxis_title="Z-Score",
+    yaxis2=dict(overlaying="y", side="right", tickmode="array", tickvals=tick_vals, ticktext=tick_labels, showgrid=False),height=420)
+fig_signal.add_trace(go.Scatter(x=[signal_df["closeDate"].iloc[0]], y=[0],yaxis="y2", mode="markers", marker=dict(opacity=0), showlegend=False))
+st.plotly_chart(fig_signal, use_container_width=True)
+
+
+backtest_df = run_backtest(signal_df, slippage_bps=slippage_bps, train_end='2017-12-31')
+fig_pos = go.Figure()
+
+regime_colors = {
+    0: "rgba(59,130,246,0.25)",
+    1: "rgba(249,115,22,0.25)",
+    2: "rgba(139,92,246,0.25)",
+    3: "rgba(20,184,166,0.25)",
+    4: "rgba(236,72,153,0.25)",
+}
+
+for reg in all_regimes:
+    mask = signal_df["regime"] == reg
+    fig_pos.add_trace(go.Bar(x=signal_df.loc[mask, "closeDate"],
+        y=[1] * mask.sum(),marker_color=regime_colors.get(reg, "rgba(200,200,200,0.15)"),
+        name=f"Regime {reg}", showlegend=True, yaxis="y2"
+    ))
+
+colors = backtest_df["position"].map({1.0: "green", -1.0: "red", 0.0: "lightgray"}).fillna("lightgray")
+fig_pos.add_trace(go.Bar(x=backtest_df["closeDate"], y=backtest_df["position"],marker_color=colors, name="Position", showlegend=False))
+
+fig_pos.update_layout(title="Position & Regime (Long +1 / Flat 0 / Short −1)",xaxis_title="Date", yaxis_title="Position",
+    yaxis2=dict(overlaying="y", side="right", showticklabels=False, showgrid=False, range=[0, 1]),height=280, bargap=0, barmode="overlay")
+
+
 st.plotly_chart(fig_pos, use_container_width=True)
 
 

@@ -41,6 +41,33 @@ def add_rolling_zscore(df, cols, windows=[60, 120, 252]):
             out[f"{col}_z_{w}d"] = (out[col] - rolling_mean) / rolling_std
     return out
 
+def run_pca_training(curve_df, train_end="2017-12-31"):
+    train_end = pd.to_datetime(train_end)
+    cols = ["1y", "2y", "5y", "10y"]
+
+    X_all = curve_df[cols].dropna()
+    train_mask = curve_df.loc[X_all.index, "closeDate"] <= train_end
+    X_train = X_all[train_mask]
+
+    pca = PCA(n_components=3)
+    pca.fit(X_train)
+    pcs = pca.transform(X_all)
+
+    pca_df = curve_df.loc[X_all.index, ["closeDate"]].copy()
+    pca_df["Level"]     = pcs[:, 0]
+    pca_df["Slope"]     = pcs[:, 1]
+    pca_df["Curvature"] = pcs[:, 2]
+
+    loadings = pd.DataFrame(pca.components_.T, index=cols,columns=["Level", "Slope", "Curvature"])
+
+    explained = pd.DataFrame({"Component": ["Level", "Slope", "Curvature"],"Explained Variance": pca.explained_variance_ratio_})
+
+    train_pcs = pca_df[pca_df["closeDate"] <= train_end]
+    for pc in ["Level", "Slope", "Curvature"]:
+        mean = train_pcs[pc].mean()
+        std  = train_pcs[pc].std()
+        pca_df[f"{pc}_z"] = (pca_df[pc] - mean) / std
+    return pca_df, loadings, explained
 
 # =================== Stationarity ===================
 
@@ -159,6 +186,7 @@ def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, random_
     return out, centers, model
 
 
+# =================== Trading ===================
 
 def compute_trading_signal(residual_df, z_window, entry_long, entry_short, exit_band, stop_loss):
     df = residual_df.copy()
@@ -200,4 +228,91 @@ def compute_trading_signal(residual_df, z_window, entry_long, entry_short, exit_
         position.iloc[i] = prev
 
     df["position"] = position
+    return df
+
+# =========== Regime z-score ===========
+def compute_regime_zscore(regime_df, train_end="2017-12-31"):
+    df = regime_df.copy()
+    train_end = pd.to_datetime(train_end)
+
+    train = df[df["closeDate"] <= train_end]
+
+    regime_stats = train.groupby("regime")["residual_spread"].agg(["mean", "std"]).reset_index()
+    regime_stats.columns = ["regime", "regime_mean", "regime_std"]
+
+    df = df.merge(regime_stats, on="regime", how="left")
+
+    df["regime_z"] = (df["residual_spread"] - df["regime_mean"]) / df["regime_std"]
+
+    return df, regime_stats
+
+def compute_trading_signal_regime(df, entry_long, entry_short, exit_band, stop_loss=None, tradeable_regimes=None):
+    out = df.copy()
+    n = len(out)
+    position  = np.zeros(n)
+    exit_type = [None] * n
+    prev = 0.0
+    z       = out["regime_z"].values
+    regimes = out["regime"].values
+    for i in range(n):
+        r = regimes[i]
+        zi = z[i]
+        regime_ok = True
+        if tradeable_regimes is not None:
+            regime_ok = (not np.isnan(r)) and (int(r) in tradeable_regimes)
+        if not regime_ok:
+            if prev != 0:
+                exit_type[i] = "regime_exit"
+            position[i] = 0.0
+            prev = 0.0
+            continue
+        if np.isnan(zi):
+            position[i] = prev
+            continue
+        if stop_loss is not None and prev != 0 and abs(zi) >= stop_loss:
+            position[i] = 0.0
+            exit_type[i] = "stop"
+            prev = 0.0
+            continue
+        if prev != 0 and abs(zi) <= exit_band:
+            position[i] = 0.0
+            exit_type[i] = "signal"
+            prev = 0.0
+            continue
+        if prev == 0:
+            if zi <= entry_long:
+                position[i] = 1.0
+                prev = 1.0
+                continue
+            elif zi >= entry_short:
+                position[i] = -1.0
+                prev = -1.0
+                continue
+        position[i] = prev
+    out["position"]  = position
+    out["exit_type"] = exit_type
+    return out
+
+
+def run_backtest(signal_df, slippage_bps=0.0, train_end="2017-12-31"):
+    df = signal_df.copy()
+    train_end = pd.to_datetime(train_end)
+
+    df["spread_change"]   = df["residual_spread"].diff()
+    df["position_prev"]   = df["position"].shift(1).fillna(0)
+    df["position_change"] = df["position"].diff().fillna(0)
+
+    df["daily_pnl"] = df["position_prev"] * df["spread_change"]
+
+    slippage_per_unit = slippage_bps / 10000
+    df["slippage_cost"] = abs(df["position_change"]) * slippage_per_unit
+
+    df["net_pnl"]        = df["daily_pnl"] - df["slippage_cost"]
+    df["cumulative_pnl"] = df["net_pnl"].cumsum()
+
+    peak = df["cumulative_pnl"].cummax()
+    df["drawdown"] = df["cumulative_pnl"] - peak
+
+    df["is_train"] = df["closeDate"] <= train_end
+
     return df
