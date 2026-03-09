@@ -157,3 +157,47 @@ def run_regime_model(df, feature_cols, model_type="kmeans", n_regimes=3, random_
         raise ValueError("model_type must be 'kmeans' or 'gmm'")
 
     return out, centers, model
+
+
+
+def compute_trading_signal(residual_df, z_window, entry_long, entry_short, exit_band, stop_loss):
+    df = residual_df.copy()
+
+    roll_mean = df["residual_spread"].rolling(z_window).mean()
+    roll_std  = df["residual_spread"].rolling(z_window).std()
+    df["residual_z"] = (df["residual_spread"] - roll_mean) / roll_std
+
+    position = pd.Series(0.0, index=df.index)
+    prev = 0.0
+
+    z = df["residual_z"].values
+
+    for i in range(len(z)):
+        if np.isnan(z[i]):
+            position.iloc[i] = 0.0
+            prev = 0.0
+            continue
+
+        if prev != 0 and abs(z[i]) >= stop_loss:
+            position.iloc[i] = 0.0
+            prev = 0.0
+            continue
+
+        if prev != 0 and abs(z[i]) <= exit_band:
+            position.iloc[i] = 0.0
+            prev = 0.0
+            continue
+
+        if prev == 0:
+            if z[i] <= entry_long:
+                position.iloc[i] = 1.0
+                prev = 1.0
+                continue
+            elif z[i] >= entry_short:
+                position.iloc[i] = -1.0
+                prev = -1.0
+                continue
+        position.iloc[i] = prev
+
+    df["position"] = position
+    return df

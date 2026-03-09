@@ -4,7 +4,7 @@ import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
 from functions import run_pca, add_rolling_zscore   #PCA
 from functions import stationarity_table            #Stationarity
-from functions import compute_residual_spread_oos       #residual
+#from functions import compute_residual_spread_oos   #residual
 from functions import run_regime_model              #Regime Model
 
 # ------------------- Basic Titles -------------------
@@ -213,100 +213,100 @@ st.divider()
 
 
 
-# ---------- Residual ----------
-st.subheader(f"Signal Construction — Using Full Sample. The results bellow are not period sensitive according to the assigned period above")
+# # ---------- Residual ----------
+# st.subheader(f"Signal Construction — Using Full Sample. The results bellow are not period sensitive according to the assigned period above")
 
-full_pca_df, full_loadings, full_explained = run_pca(curve)
-full_pca_df = add_rolling_zscore(full_pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
+# full_pca_df, full_loadings, full_explained = run_pca(curve)
+# full_pca_df = add_rolling_zscore(full_pca_df, cols=["Level", "Slope", "Curvature"], windows=[60, 120, 252])
 
-residual_df, residual_betas, residual_stats = compute_residual_spread_oos(spread, full_pca_df)
+# residual_df, residual_betas, residual_stats = compute_residual_spread_oos(spread, full_pca_df)
 
-st.subheader(f"Residual Spread ({startdate_spread} to {enddate_spread})")
-st.caption("The fair spread is estimated with OLS fitted only on the training sample up to 2017-12-31, then applied to the full sample.")
-latex = r"""
-Residual Spread:
-$$
-\text{Residual}_t = \text{Spread}_t - \widehat{\text{Spread}}_t
-$$
-where
-$$
-\widehat{\text{Spread}}_t = \alpha + \beta_1 \text{Level}_t + \beta_2 \text{Slope}_t + \beta_3 \text{Curvature}_t
-$$
-"""
-st.markdown(latex)
+# st.subheader(f"Residual Spread ({startdate_spread} to {enddate_spread})")
+# st.caption("The fair spread is estimated with OLS fitted only on the training sample up to 2017-12-31, then applied to the full sample.")
+# latex = r"""
+# Residual Spread:
+# $$
+# \text{Residual}_t = \text{Spread}_t - \widehat{\text{Spread}}_t
+# $$
+# where
+# $$
+# \widehat{\text{Spread}}_t = \alpha + \beta_1 \text{Level}_t + \beta_2 \text{Slope}_t + \beta_3 \text{Curvature}_t
+# $$
+# """
+# st.markdown(latex)
 
-left_res, right_res = st.columns([0.35, 0.65])
+# left_res, right_res = st.columns([0.35, 0.65])
 
-with left_res:
-    st.dataframe(residual_betas, width="stretch")
-    fit_table = pd.DataFrame({"Metric": ["Train R-squared", "Train Adj. R-squared"],"Value": [residual_stats["r2_train"], residual_stats["adj_r2_train"]]})
-    st.dataframe(fit_table, width="stretch")
+# with left_res:
+#     st.dataframe(residual_betas, width="stretch")
+#     fit_table = pd.DataFrame({"Metric": ["Train R-squared", "Train Adj. R-squared"],"Value": [residual_stats["r2_train"], residual_stats["adj_r2_train"]]})
+#     st.dataframe(fit_table, width="stretch")
 
-with right_res:
-    fig_res = go.Figure()
-    fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["spread"],mode="lines",name="Actual Spread"))
-    fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["fair_spread"],mode="lines",name="Fair Spread"))
-    fig_res.update_layout(title="Actual vs Fair Spread",xaxis_title="Date",yaxis_title="Spread", yaxis_tickformat=".2%")
-    st.plotly_chart(fig_res, width="stretch")
-
-
-fig_residual = go.Figure()
-fig_residual.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["residual_spread"],mode="lines",name="Residual Spread"))
-fig_residual.update_layout(title="Residual Spread Time Series",xaxis_title="Date",yaxis_title="Residual Spread")
-st.plotly_chart(fig_residual, width="stretch")
-
-residual_stats_table = stationarity_table(residual_df["residual_spread"],name="1Y1Y - 5Y5Y Residual Spread")
-
-st.subheader(f"Residual Spread Stationarity Analysis ({startdate_spread} to {enddate_spread})")
-st.dataframe(residual_stats_table, width="stretch")
-
-st.markdown("The residual helps us answer if the 1y1y-5y5y is high or low given today’s level, slope, and curvature. To support this analysis we will add a regime clustering.")
-
-st.divider()
-
-# ---------- Regime Clustering ----------
-
-regime_df = full_pca_df[["closeDate", "Level", "Slope", "Curvature"]].copy()
-regime_df = regime_df.merge(residual_df[["closeDate", "residual_spread"]],on="closeDate",how="inner")
-regime_df = regime_df.dropna().reset_index(drop=True)
-
-st.subheader(f"Regime Analysis - ({startdate_spread} to {enddate_spread})")
-st.markdown("Lets cluster the regimes using 2 different models, Gaussian Mixture Model (GMM) and K-means")
-
-left_regime, right_regime = st.columns([0.5, 0.5])
-
-with left_regime:
-    clustering_option = st.radio("Choose the model:",options=["gmm","kmeans"],horizontal=True)
-
-with right_regime:
-    n_regimes = st.selectbox("Number of regimes", [2, 3, 4, 5], index=1)
-
-regime_df, centers, model = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
-
-st.subheader("Regime Timeline")
-
-fig_regime = go.Figure()
-
-train_sub = regime_df[regime_df["is_train"] == True]
-test_sub = regime_df[regime_df["is_train"] == False]
-
-fig_regime.add_trace(go.Scatter(x=train_sub["closeDate"],y=train_sub["regime"],mode="markers",marker=dict(size=7, color="blue"),name="Train"))
-fig_regime.add_trace(go.Scatter(x=test_sub["closeDate"],y=test_sub["regime"],mode="markers",marker=dict(size=7, color="red"),name="Test"))
-fig_regime.update_layout(title="Regime Classification Through Time",xaxis_title="Date",yaxis_title="Regime")
-st.plotly_chart(fig_regime, width="stretch")
-
-cur_reg = int(regime_df["regime"].dropna().iloc[-1])
-st.subheader(f"Current Regime: {cur_reg}")
-
-st.subheader("Regime Summary")
-summary = regime_df.groupby(["is_train", "regime"]).agg(Count=("regime", "size"),Avg_Residual=("residual_spread", "mean"),Std_Residual=("residual_spread", "std")).reset_index()
-st.dataframe(summary, width="stretch")
-
-st.subheader("Regime Centers")
-st.dataframe(centers, width="stretch")
+# with right_res:
+#     fig_res = go.Figure()
+#     fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["spread"],mode="lines",name="Actual Spread"))
+#     fig_res.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["fair_spread"],mode="lines",name="Fair Spread"))
+#     fig_res.update_layout(title="Actual vs Fair Spread",xaxis_title="Date",yaxis_title="Spread", yaxis_tickformat=".2%")
+#     st.plotly_chart(fig_res, width="stretch")
 
 
-st.divider()
+# fig_residual = go.Figure()
+# fig_residual.add_trace(go.Scatter(x=residual_df["closeDate"],y=residual_df["residual_spread"],mode="lines",name="Residual Spread"))
+# fig_residual.update_layout(title="Residual Spread Time Series",xaxis_title="Date",yaxis_title="Residual Spread")
+# st.plotly_chart(fig_residual, width="stretch")
+
+# residual_stats_table = stationarity_table(residual_df["residual_spread"],name="1Y1Y - 5Y5Y Residual Spread")
+
+# st.subheader(f"Residual Spread Stationarity Analysis ({startdate_spread} to {enddate_spread})")
+# st.dataframe(residual_stats_table, width="stretch")
+
+# st.markdown("The residual helps us answer if the 1y1y-5y5y is high or low given today’s level, slope, and curvature. To support this analysis we will add a regime clustering.")
+
+# st.divider()
+
+# # ---------- Regime Clustering ----------
+
+# regime_df = full_pca_df[["closeDate", "Level", "Slope", "Curvature"]].copy()
+# regime_df = regime_df.merge(residual_df[["closeDate", "residual_spread"]],on="closeDate",how="inner")
+# regime_df = regime_df.dropna().reset_index(drop=True)
+
+# st.subheader(f"Regime Analysis - ({startdate_spread} to {enddate_spread})")
+# st.markdown("Lets cluster the regimes using 2 different models, Gaussian Mixture Model (GMM) and K-means")
+
+# left_regime, right_regime = st.columns([0.5, 0.5])
+
+# with left_regime:
+#     clustering_option = st.radio("Choose the model:",options=["gmm","kmeans"],horizontal=True)
+
+# with right_regime:
+#     n_regimes = st.selectbox("Number of regimes", [2, 3, 4, 5], index=1)
+
+# regime_df, centers, model = run_regime_model(regime_df,["Level", "Slope", "Curvature", "residual_spread"],model_type=clustering_option,n_regimes=n_regimes)
+
+# st.subheader("Regime Timeline")
+
+# fig_regime = go.Figure()
+
+# train_sub = regime_df[regime_df["is_train"] == True]
+# test_sub = regime_df[regime_df["is_train"] == False]
+
+# fig_regime.add_trace(go.Scatter(x=train_sub["closeDate"],y=train_sub["regime"],mode="markers",marker=dict(size=7, color="blue"),name="Train"))
+# fig_regime.add_trace(go.Scatter(x=test_sub["closeDate"],y=test_sub["regime"],mode="markers",marker=dict(size=7, color="red"),name="Test"))
+# fig_regime.update_layout(title="Regime Classification Through Time",xaxis_title="Date",yaxis_title="Regime")
+# st.plotly_chart(fig_regime, width="stretch")
+
+# cur_reg = int(regime_df["regime"].dropna().iloc[-1])
+# st.subheader(f"Current Regime: {cur_reg}")
+
+# st.subheader("Regime Summary")
+# summary = regime_df.groupby(["is_train", "regime"]).agg(Count=("regime", "size"),Avg_Residual=("residual_spread", "mean"),Std_Residual=("residual_spread", "std")).reset_index()
+# st.dataframe(summary, width="stretch")
+
+# st.subheader("Regime Centers")
+# st.dataframe(centers, width="stretch")
 
 
-st.subheader('Trading those spreads')
+# st.divider()
+
+
+# st.subheader('Trading those spreads')
