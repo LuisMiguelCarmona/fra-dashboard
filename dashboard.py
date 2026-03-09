@@ -134,7 +134,7 @@ with right_panel:
     fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Slope"], name="Slope"))
     fig_loadings.add_trace(go.Scatter(x=loadings.index, y=loadings["Curvature"], name="Curvature"))
 
-    fig_loadings.update_layout(title="PCA Weights by Vertex",xaxis_title="Vertex",yaxis_title="Loading",barmode="group")
+    fig_loadings.update_layout(title="PCA Weights by Vertex",xaxis_title="Vertex",yaxis_title="Weight")
 
     st.plotly_chart(fig_loadings, width="stretch")
 
@@ -315,3 +315,46 @@ st.divider()
 st.subheader('Trading the residual')
 
 hl = compute_half_life(residual_df["residual_spread"])
+
+default_window = int(round(hl))
+
+ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
+
+with ctrl1:
+    z_window = st.slider("Z-Score Window (days)", min_value=10, max_value=120, value=default_window, step=1)
+with ctrl2:
+    entry_threshold = st.slider("Entry Threshold (σ)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+with ctrl3:
+    exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
+with ctrl4:
+    stop_loss = st.slider("Stop-Loss (σ)", min_value=2.0, max_value=5.0, value=3.0, step=0.25)
+
+
+signal_df = compute_trading_signal(residual_df[["closeDate", "residual_spread"]].copy(),z_window=z_window,
+                                   entry_long=-entry_threshold,entry_short=entry_threshold,exit_band=exit_band,stop_loss=stop_loss)
+
+fig_signal = go.Figure()
+
+st.markdown("Trading the residual")
+st.markdown("")
+st.markdown("")
+
+fig_signal.add_trace(go.Scatter(x=signal_df["closeDate"], y=signal_df["residual_z"],mode="lines", name="Residual Z-Score"))
+fig_signal.add_hline(y=entry_threshold,  line_dash="dash", line_color="red")
+fig_signal.add_hline(y=-entry_threshold, line_dash="dash", line_color="green")
+fig_signal.add_hline(y=exit_band,  line_dash="dot", line_color="gray")
+fig_signal.add_hline(y=-exit_band, line_dash="dot", line_color="gray")
+fig_signal.add_hline(y=stop_loss,  line_dash="dashdot", line_color="black")
+fig_signal.add_hline(y=-stop_loss, line_dash="dashdot", line_color="black")
+fig_signal.add_hline(y=0, line_color="lightgray", line_width=0.5)
+fig_signal.update_layout(title="Residual Z-Score with Trading Bands",xaxis_title="Date", yaxis_title="Z-Score")
+st.plotly_chart(fig_signal)
+
+fig_pos = go.Figure()
+
+colors = signal_df["position"].map({1.0: "green", -1.0: "red", 0.0: "gray"})
+fig_pos.add_trace(go.Bar(x=signal_df["closeDate"], y=signal_df["position"],marker_color=colors, name="Position"))
+fig_pos.update_layout(title="Position Over Time",xaxis_title="Date", yaxis_title="Position",height=300, bargap=0)
+st.plotly_chart(fig_pos, use_container_width=True)
+
+
