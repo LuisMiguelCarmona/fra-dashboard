@@ -3,13 +3,13 @@ import plotly.graph_objects as go
 import pandas as pd
 from data_loader import load_json, build_curve_df, spread_fra
 from functions import run_pca, add_rolling_zscore   #PCA
-from functions import run_pca_training          #PCA
-from functions import stationarity_table                #Stationarity
+from functions import run_pca_training              #PCA
+from functions import stationarity_table            #Stationarity
 from functions import compute_residual_spread_oos   #residual
 from functions import run_regime_model              #Regime Model
-from functions import compute_half_life, compute_trading_signal #Trading
-from functions import compute_trading_signal_regime #Trading
-from functions import compute_regime_zscore #Trading
+from functions import compute_half_life, compute_trading_signal     #Trading
+from functions import compute_trading_signal_regime                 #Trading Regime
+from functions import compute_regime_zscore                         #Trading Regime
 from functions import run_backtest
 TRAINING_DATE = pd.to_datetime('2017-12-31')
 
@@ -339,6 +339,7 @@ fig_signal.add_hline(y=stop_loss,  line_dash="dashdot", line_color="black")
 fig_signal.add_hline(y=-stop_loss, line_dash="dashdot", line_color="black")
 fig_signal.add_hline(y=0, line_color="lightgray", line_width=0.5)
 fig_signal.update_layout(title="Residual Z-Score with Trading Bands",xaxis_title="Date", yaxis_title="Z-Score")
+fig_signal.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 st.plotly_chart(fig_signal)
 
 fig_pos = go.Figure()
@@ -346,7 +347,8 @@ fig_pos = go.Figure()
 colors = signal_df["position"].map({1.0: "green", -1.0: "red", 0.0: "gray"})
 fig_pos.add_trace(go.Bar(x=signal_df["closeDate"], y=signal_df["position"],marker_color=colors, name="Position"))
 fig_pos.update_layout(title="Position Over Time",xaxis_title="Date", yaxis_title="Position",height=300, bargap=0)
-st.plotly_chart(fig_pos, use_container_width=True)
+fig_pos.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+st.plotly_chart(fig_pos)
 
 
 st.subheader('Trading the residual with Regimes')
@@ -370,8 +372,17 @@ with ctrl_row1_c1:
     entry_threshold = st.slider("Entry (σ)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
 with ctrl_row1_c2:
     exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.5, value=0.25, step=0.05)
-with ctrl_row1_c3:
+
+ctrl_row2_c1, ctrl_row2_c2,ctrl_row2_c3,ctrl_row2_c4 = st.columns(4)
+with ctrl_row2_c1:
+    roll_freq = st.slider("Roll Frequency (days)", min_value=30, max_value=180, value=90, step=10)
+with ctrl_row2_c2:
+    roll_cost_bps = st.slider("Roll Cost (bps)", min_value=0.0, max_value=10.0, value=1.0, step=0.5)
+with ctrl_row2_c3:
     slippage_bps = st.slider("Slippage per trade (bps)", min_value=0.0, max_value=20.0, value=0.0, step=1.0)
+# with ctrl_row2_c4:
+#     slippage_bps = st.slider("Entry/Exit Slippage (bps)", min_value=0.0, max_value=20.0, value=0.0, step=1.0)
+
 
 ctrl_row2_c1, ctrl_row2_c2 = st.columns(2)
 
@@ -417,10 +428,11 @@ if stop_loss is not None:
 fig_signal.update_layout(title="Regime-Conditioned Z-Score with Trading Bands",xaxis_title="Date", yaxis_title="Z-Score",
     yaxis2=dict(overlaying="y", side="right", tickmode="array", tickvals=tick_vals, ticktext=tick_labels, showgrid=False),height=420)
 fig_signal.add_trace(go.Scatter(x=[signal_df["closeDate"].iloc[0]], y=[0],yaxis="y2", mode="markers", marker=dict(opacity=0), showlegend=False))
-st.plotly_chart(fig_signal, use_container_width=True)
+fig_signal.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+st.plotly_chart(fig_signal)
 
 
-backtest_df = run_backtest(signal_df, slippage_bps=slippage_bps, train_end='2017-12-31')
+backtest_df = run_backtest(signal_df, slippage_bps=slippage_bps, roll_freq=roll_freq, roll_cost_bps=roll_cost_bps, train_end='2017-12-31')
 fig_pos = go.Figure()
 
 regime_colors = {
@@ -440,11 +452,21 @@ for reg in all_regimes:
 
 colors = backtest_df["position"].map({1.0: "green", -1.0: "red", 0.0: "lightgray"}).fillna("lightgray")
 fig_pos.add_trace(go.Bar(x=backtest_df["closeDate"], y=backtest_df["position"],marker_color=colors, name="Position", showlegend=False))
-
 fig_pos.update_layout(title="Position & Regime (Long +1 / Flat 0 / Short −1)",xaxis_title="Date", yaxis_title="Position",
     yaxis2=dict(overlaying="y", side="right", showticklabels=False, showgrid=False, range=[0, 1]),height=280, bargap=0, barmode="overlay")
+fig_pos.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+st.plotly_chart(fig_pos)
 
 
-st.plotly_chart(fig_pos, use_container_width=True)
 
 
+
+total_slippage = backtest_df["slippage_cost"].sum()
+total_roll     = backtest_df["roll_cost"].sum()
+total_gross    = backtest_df["daily_pnl"].sum()
+total_net      = backtest_df["net_pnl"].sum()
+
+st.caption(f"Gross P&L: {total_gross*10000:.2f} bps | "
+           f"Slippage: {total_slippage*10000:.2f} bps | "
+           f"Roll costs: {total_roll*10000:.2f} bps | "
+           f"Net P&L: {total_net*10000:.2f} bps")

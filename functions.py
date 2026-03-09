@@ -294,7 +294,7 @@ def compute_trading_signal_regime(df, entry_long, entry_short, exit_band, stop_l
     return out
 
 
-def run_backtest(signal_df, slippage_bps=0.0, train_end="2017-12-31"):
+def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, train_end="2017-12-31"):
     df = signal_df.copy()
     train_end = pd.to_datetime(train_end)
 
@@ -304,15 +304,29 @@ def run_backtest(signal_df, slippage_bps=0.0, train_end="2017-12-31"):
 
     df["daily_pnl"] = df["position_prev"] * df["spread_change"]
 
-    slippage_per_unit = slippage_bps / 10000
+    slippage_per_unit = slippage_bps / 10000.0
     df["slippage_cost"] = abs(df["position_change"]) * slippage_per_unit
 
-    df["net_pnl"]        = df["daily_pnl"] - df["slippage_cost"]
+    roll_per_unit = roll_cost_bps / 10000.0
+    days_in_position = np.zeros(len(df))
+    roll_cost = np.zeros(len(df))
+
+    for i in range(1, len(df)):
+        if df["position_prev"].iloc[i] != 0:
+            days_in_position[i] = days_in_position[i - 1] + 1
+            if roll_freq > 0 and days_in_position[i] % roll_freq == 0:
+                roll_cost[i] = roll_per_unit
+        else:
+            days_in_position[i] = 0
+
+    df["days_in_position"] = days_in_position
+    df["roll_cost"]        = roll_cost
+
+    df["net_pnl"]        = df["daily_pnl"] - df["slippage_cost"] - df["roll_cost"]
     df["cumulative_pnl"] = df["net_pnl"].cumsum()
 
     peak = df["cumulative_pnl"].cummax()
     df["drawdown"] = df["cumulative_pnl"] - peak
-
     df["is_train"] = df["closeDate"] <= train_end
 
     return df
