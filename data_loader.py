@@ -28,8 +28,8 @@ def build_curve_df(spot1y, spot2y, spot5y, spot10y):
     return df.sort_values("closeDate").reset_index(drop=True)
 
 def spread_fra(curve1, curve2):
-    spread = curve1.copy()
-    spread["spread"] = curve1["nominalRateValue"] - curve2["nominalRateValue"]
-    return spread[['closeDate','spread']]
+    merged = curve1[["closeDate", "nominalRateValue"]].merge(curve2[["closeDate", "nominalRateValue"]],on="closeDate", how="inner", suffixes=("_1", "_2"))
+    merged["spread"] = merged["nominalRateValue_1"] - merged["nominalRateValue_2"]
+    return merged[["closeDate", "spread"]]
 
 

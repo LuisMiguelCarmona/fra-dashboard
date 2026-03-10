@@ -298,9 +298,9 @@ def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, t
     df = signal_df.copy()
     train_end = pd.to_datetime(train_end)
 
-    df["spread_change"]   = df["residual_spread"].diff()
-    df["position_prev"]   = df["position"].shift(1).fillna(0)
-    df["position_change"] = df["position"].diff().fillna(0)
+    df["spread_change"]   = df["spread"].diff()
+    df["position_prev"]   = df["position"].shift(1).fillna(0.0)
+    df["position_change"] = df["position"].diff().fillna(0.0)
 
     df["daily_pnl"] = df["position_prev"] * df["spread_change"]
 
@@ -320,13 +320,119 @@ def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, t
             days_in_position[i] = 0
 
     df["days_in_position"] = days_in_position
-    df["roll_cost"]        = roll_cost
+    df["roll_cost"] = roll_cost
 
-    df["net_pnl"]        = df["daily_pnl"] - df["slippage_cost"] - df["roll_cost"]
+    df["net_pnl"] = df["daily_pnl"] - df["slippage_cost"] - df["roll_cost"]
     df["cumulative_pnl"] = df["net_pnl"].cumsum()
 
     peak = df["cumulative_pnl"].cummax()
     df["drawdown"] = df["cumulative_pnl"] - peak
     df["is_train"] = df["closeDate"] <= train_end
-
     return df
+
+
+
+
+
+def build_trade_log(signal_df):
+    df = signal_df.copy().reset_index(drop=True)
+    trades = []
+    in_trade = False
+    entry_idx = None
+
+    z_col = "regime_z" if "regime_z" in df.columns else "residual_z"
+    has_regime = "regime" in df.columns
+
+    for i in range(len(df)):
+        pos      = df["position"].iloc[i]
+        prev_pos = df["position"].iloc[i - 1] if i > 0 else 0.0
+
+        if prev_pos == 0 and pos != 0:
+            in_trade = True
+            entry_idx = i
+
+        if in_trade and prev_pos != 0 and pos == 0:
+            direction = "long" if df["position"].iloc[entry_idx] == 1.0 else "short"
+            sign = 1.0 if direction == "long" else -1.0
+
+            entry_spread = df["residual_spread"].iloc[entry_idx]
+            exit_spread  = df["residual_spread"].iloc[i]
+            pnl = sign * (exit_spread - entry_spread)
+
+            trade = {
+                "entry_date":    df["closeDate"].iloc[entry_idx],
+                "exit_date":     df["closeDate"].iloc[i],
+                "direction":     direction,
+                "entry_z":       df[z_col].iloc[entry_idx],
+                "exit_z":        df[z_col].iloc[i],
+                "entry_spread":  entry_spread,
+                "exit_spread":   exit_spread,
+                "pnl":           pnl,
+                "holding_days":  (df["closeDate"].iloc[i] - df["closeDate"].iloc[entry_idx]).days,
+                "exit_type":     df["exit_type"].iloc[i] if "exit_type" in df.columns else None,
+            }
+            if has_regime:
+                trade["entry_regime"] = int(df["regime"].iloc[entry_idx])
+
+            trades.append(trade)
+            in_trade = False
+            entry_idx = None
+
+    return pd.DataFrame(trades)
+
+
+def compute_performance_metrics(backtest_df, trade_log_df, annual_factor=252):
+    def _metrics(pnl_series, trades_sub):
+        if len(pnl_series) == 0 or pnl_series.std() == 0:
+            return {k: np.nan for k in ["total_pnl", "annual_return", "annual_vol","sharpe", "sortino", "max_drawdown","n_trades", "avg_holding_days", "pnl_per_trade"]}
+
+        total_pnl     = pnl_series.sum()
+        n_days        = len(pnl_series)
+        annual_return = total_pnl * (annual_factor / n_days) if n_days > 0 else 0
+        annual_vol    = pnl_series.std() * np.sqrt(annual_factor)
+        sharpe        = annual_return / annual_vol if annual_vol > 0 else np.nan
+
+        downside     = pnl_series[pnl_series < 0]
+        downside_vol = downside.std() * np.sqrt(annual_factor) if len(downside) > 0 else np.nan
+        sortino      = annual_return / downside_vol if downside_vol and downside_vol > 0 else np.nan
+
+        cum    = pnl_series.cumsum()
+        peak   = cum.cummax()
+        max_dd = (cum - peak).min()
+
+        n_trades = len(trades_sub)
+        if n_trades > 0:
+            avg_holding   = trades_sub["holding_days"].mean()
+            pnl_per_trade = trades_sub["pnl"].mean()
+        else:
+            avg_holding = pnl_per_trade = np.nan
+
+        return {
+            "total_pnl":        total_pnl,
+            "annual_return":    annual_return,
+            "annual_vol":       annual_vol,
+            "sharpe":           sharpe,
+            "sortino":          sortino,
+            "max_drawdown":     max_dd,
+            "n_trades":         n_trades,
+            "avg_holding_days": avg_holding,
+            "pnl_per_trade":    pnl_per_trade,
+        }
+
+    train_end = pd.to_datetime("2017-12-31")
+
+    train_pnl = backtest_df.loc[backtest_df["is_train"], "net_pnl"]
+    test_pnl  = backtest_df.loc[~backtest_df["is_train"], "net_pnl"]
+
+    if len(trade_log_df) > 0:
+        train_trades = trade_log_df[trade_log_df["entry_date"] <= train_end]
+        test_trades  = trade_log_df[trade_log_df["entry_date"] > train_end]
+    else:
+        train_trades = trade_log_df
+        test_trades  = trade_log_df
+
+    return {
+        "all":   _metrics(backtest_df["net_pnl"], trade_log_df),
+        "train": _metrics(train_pnl, train_trades),
+        "test":  _metrics(test_pnl, test_trades),
+    }

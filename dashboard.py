@@ -1,6 +1,7 @@
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 from data_loader import load_json, build_curve_df, spread_fra
 from functions import run_pca, add_rolling_zscore   #PCA
 from functions import run_pca_training              #PCA
@@ -10,6 +11,7 @@ from functions import run_regime_model              #Regime Model
 from functions import compute_half_life, compute_trading_signal     #Trading
 from functions import compute_trading_signal_regime                 #Trading Regime
 from functions import compute_regime_zscore                         #Trading Regime
+from functions import build_trade_log, compute_performance_metrics  #Trading Output
 from functions import run_backtest
 TRAINING_DATE = pd.to_datetime('2017-12-31')
 
@@ -271,7 +273,7 @@ st.divider()
 # ---------- Regime Clustering ----------
 
 regime_df = full_pca_df[["closeDate", "Level", "Slope", "Curvature"]].copy()
-regime_df = regime_df.merge(residual_df[["closeDate", "residual_spread"]],on="closeDate",how="inner")
+regime_df = regime_df.merge(residual_df[["closeDate", 'spread', "residual_spread"]],on="closeDate",how="inner")
 regime_df = regime_df.dropna().reset_index(drop=True)
 
 st.subheader(f"Regime Analysis - ({startdate_spread} to {enddate_spread})")
@@ -354,7 +356,7 @@ st.plotly_chart(fig_pos)
 st.subheader('Trading the residual with Regimes')
 st.markdown('Now, lets make an improvement, we will trade the residual using different z-score of each regime. This is important so we can analyse each period characteristics.')
 
-trade_input = regime_df[["closeDate", "regime", "residual_spread"]].copy()
+trade_input = regime_df[["closeDate", "regime", "spread", "residual_spread"]].copy()
 trade_input, regime_stats = compute_regime_zscore(trade_input, train_end="2017-12-31")
 
 st.markdown("Residual distribution per regime (training sample)")
@@ -369,27 +371,25 @@ all_regimes = sorted(trade_input["regime"].dropna().unique().astype(int).tolist(
 ctrl_row1_c1, ctrl_row1_c2, ctrl_row1_c3 = st.columns(3)
 
 with ctrl_row1_c1:
-    entry_threshold = st.slider("Entry (σ)", min_value=0.5, max_value=3.0, value=1.5, step=0.1)
+    entry_threshold = st.slider("Entry (σ)", min_value=0.5, max_value=3.0, value=2.0, step=0.1)
 with ctrl_row1_c2:
-    exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.5, value=0.25, step=0.05)
+    exit_band = st.slider("Exit Band (σ)", min_value=0.0, max_value=1.5, value=0.4, step=0.05)
 
 ctrl_row2_c1, ctrl_row2_c2,ctrl_row2_c3,ctrl_row2_c4 = st.columns(4)
 with ctrl_row2_c1:
-    roll_freq = st.slider("Roll Frequency (days)", min_value=30, max_value=180, value=90, step=10)
+    roll_freq = st.slider("Roll Frequency (days)", min_value=30, max_value=180, value=30, step=10)
 with ctrl_row2_c2:
-    roll_cost_bps = st.slider("Roll Cost (bps)", min_value=0.0, max_value=10.0, value=1.0, step=0.5)
+    roll_cost_bps = st.slider("Roll Cost (bps)", min_value=0.0, max_value=10.0, value=2.0, step=0.5)
 with ctrl_row2_c3:
-    slippage_bps = st.slider("Slippage per trade (bps)", min_value=0.0, max_value=20.0, value=0.0, step=1.0)
-# with ctrl_row2_c4:
-#     slippage_bps = st.slider("Entry/Exit Slippage (bps)", min_value=0.0, max_value=20.0, value=0.0, step=1.0)
+    slippage_bps = st.slider("Slippage per trade (bps)", min_value=0.0, max_value=20.0, value=1.0, step=1.0)
 
 
 ctrl_row2_c1, ctrl_row2_c2 = st.columns(2)
 
 with ctrl_row2_c1:
-    use_stop = st.checkbox("Enable Stop-Loss", value=False)
+    use_stop = st.checkbox("Enable Stop-Loss", value=True)
     if use_stop:
-        stop_loss = st.slider("Stop-Loss (σ)", min_value=2.0, max_value=5.0, value=3.0, step=0.25)
+        stop_loss = st.slider("Stop-Loss (σ)", min_value=2.0, max_value=5.0, value=4.0, step=0.25)
     else:
         stop_loss = None
 
@@ -458,9 +458,6 @@ fig_pos.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
 st.plotly_chart(fig_pos)
 
 
-
-
-
 total_slippage = backtest_df["slippage_cost"].sum()
 total_roll     = backtest_df["roll_cost"].sum()
 total_gross    = backtest_df["daily_pnl"].sum()
@@ -470,3 +467,124 @@ st.caption(f"Gross P&L: {total_gross*10000:.2f} bps | "
            f"Slippage: {total_slippage*10000:.2f} bps | "
            f"Roll costs: {total_roll*10000:.2f} bps | "
            f"Net P&L: {total_net*10000:.2f} bps")
+
+
+
+fig_pnl = go.Figure()
+
+train_bt = backtest_df[backtest_df["is_train"]]
+test_bt  = backtest_df[~backtest_df["is_train"]]
+
+fig_pnl.add_trace(go.Scatter(x=train_bt["closeDate"], y=train_bt["cumulative_pnl"] * 10000,
+                              mode="lines", name="Train", line=dict(color="blue", width=1.5)))
+fig_pnl.add_trace(go.Scatter(x=test_bt["closeDate"], y=test_bt["cumulative_pnl"] * 10000,
+                              mode="lines", name="Test", line=dict(color="green", width=1.5)))
+fig_pnl.add_hline(y=0, line_color="lightgray", line_width=0.5)
+fig_pnl.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
+fig_pnl.update_layout(title="Cumulative Net P&L", xaxis_title="Date", yaxis_title="P&L (bps)", height=400)
+fig_pnl.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+st.plotly_chart(fig_pnl)
+
+
+fig_dd = go.Figure()
+fig_dd.add_trace(go.Scatter(x=backtest_df["closeDate"], y=backtest_df["drawdown"] * 10000,
+                             mode="lines", name="Drawdown",
+                             fill="tozeroy", fillcolor="rgba(239,68,68,0.15)",
+                             line=dict(color= 'red', width=1)))
+
+fig_dd.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
+fig_dd.update_layout(title="Drawdown", xaxis_title="Date", yaxis_title="Drawdown (bps)", height=300)
+fig_dd.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+st.plotly_chart(fig_dd)
+
+
+st.subheader("Performance Metrics")
+
+trade_log = build_trade_log(signal_df)
+metrics   = compute_performance_metrics(backtest_df, trade_log)
+
+def _fmt(val, fmt_type="f4"):
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return "—"
+    if fmt_type == "pct":  return f"{val:.1%}"
+    if fmt_type == "int":  return f"{int(val)}"
+    if fmt_type == "f2":   return f"{val:.2f}"
+    if fmt_type == "bps":  return f"{val * 10000:.2f}"
+    return str(val)
+
+metric_rows = [
+    ("Total P&L (bps)",       "bps"),
+    ("Ann. Return (bps)",     "bps"),
+    ("Ann. Vol (bps)",        "bps"),
+    ("Sharpe",                "f2"),
+    ("Sortino",               "f2"),
+    ("Max Drawdown (bps)",    "bps"),
+    ("# Trades",              "int"),
+    ("Avg Holding (days)",    "f2"),
+    ("P&L / Trade (bps)",     "bps"),
+]
+
+keys = [
+    "total_pnl", "annual_return", "annual_vol",
+    "sharpe", 'sortino',"max_drawdown",
+    "n_trades", "avg_holding_days", "pnl_per_trade",
+]
+
+perf_data = []
+for (label, fmt), key in zip(metric_rows, keys):
+    perf_data.append({
+        "Metric": label,
+        "Full":   _fmt(metrics["all"].get(key),   fmt),
+        "Train":  _fmt(metrics["train"].get(key),  fmt),
+        "Test":   _fmt(metrics["test"].get(key),   fmt),
+    })
+
+st.dataframe(pd.DataFrame(perf_data), hide_index=True)
+
+
+st.subheader("Monthly P&L Heatmap")
+
+monthly = backtest_df.copy()
+monthly["year"]  = monthly["closeDate"].dt.year
+monthly["month"] = monthly["closeDate"].dt.month
+
+monthly_pnl = monthly.groupby(["year", "month"])["net_pnl"].sum().reset_index()
+monthly_pivot = monthly_pnl.pivot(index="year", columns="month", values="net_pnl")
+
+month_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+monthly_pivot.columns = [month_names[m - 1] for m in monthly_pivot.columns]
+monthly_pivot["Annual"] = monthly_pivot.sum(axis=1)
+
+fig_heatmap = go.Figure(data=go.Heatmap(
+    z=monthly_pivot.iloc[:, :-1].values * 10000,
+    x=monthly_pivot.columns[:-1],
+    y=monthly_pivot.index.astype(str),
+    colorscale="RdYlGn", zmid=0,
+    text=np.round(monthly_pivot.iloc[:, :-1].values * 10000, 1),
+    texttemplate="%{text}",
+    textfont={"size": 10},
+    hovertemplate="Year: %{y}<br>Month: %{x}<br>P&L: %{z:.1f} bps<extra></extra>"
+))
+fig_heatmap.update_layout(title="Monthly Net P&L (bps)",
+                          height=max(300, len(monthly_pivot) * 30 + 80))
+st.plotly_chart(fig_heatmap)
+
+
+st.subheader("Trade Log")
+
+if len(trade_log) > 0:
+    display_log = trade_log.copy()
+    display_log["entry_date"] = display_log["entry_date"].dt.date
+    display_log["exit_date"]  = display_log["exit_date"].dt.date
+    display_log["pnl_bps"]    = (display_log["pnl"] * 10000).round(2)
+    display_log["entry_z"]    = display_log["entry_z"].round(3)
+    display_log["exit_z"]     = display_log["exit_z"].round(3)
+
+    st.dataframe(
+        display_log[["entry_date", "exit_date", "direction", "entry_regime",
+                      "entry_z", "exit_z", "pnl_bps", "holding_days", "exit_type"]],
+        hide_index=True
+    )
+else:
+    st.info("No trades generated with current parameters.")
+
