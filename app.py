@@ -7,6 +7,7 @@ import curveEvolution
 import stationarity
 import pca
 import macro
+import macroTrading
 
 
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
@@ -123,6 +124,8 @@ def main():
 
     with tab1:
         macro.render(data['macro_df'], data['spread_df'], data['inflation_curve'], data['nominal_curve'])        
+        result_df = macro.render_model(data['macro_df'], data['spread_df'], data['inflation_curve'], TRAIN_END)
+        macroTrading.render(result_df, data['inflation_curve'], data['spread_df'], TRAIN_END)
 
     with tab2:
         pca_df, start_date,end_date = pca.plot_pca(data['nominal_curve'])

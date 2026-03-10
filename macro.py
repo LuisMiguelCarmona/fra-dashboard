@@ -1,3 +1,12 @@
+from macroAnalysis import (
+    build_macro_features,
+    compute_vif,
+    run_granger_tests,
+    run_engle_granger,
+    compute_macro_residual_ols,
+    compute_macro_residual_rolling_ridge,
+)
+from stationarity import stationarity_table
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -173,3 +182,217 @@ def render(macro_df, spread_df, inflation_curve, nominal_curve):
         ))
         fig_corr.update_layout(height=450, title="Correlation Matrix (Daily Changes)")
         st.plotly_chart(fig_corr)
+
+
+
+
+
+# =================== MODEL SECTION ===================
+
+def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
+    st.divider()
+    st.subheader("Macro Fair Value Model")
+    st.markdown("""
+    We model: **Spread = f(macro features)** and trade the residual.
+    Unlike the PCA approach (R² ≈ 0.98 — near-identity), macro drivers provide
+    an economically meaningful fair value.
+    """)
+
+    infl_cols = [c for c in inflation_curve.columns if c.startswith("Inflation_")]
+    cds_cols = sorted([c for c in macro_df.columns if c.lower().startswith("cds")])
+    other_cols = [c for c in macro_df.columns if c not in ["closeDate"] + cds_cols]
+    full_macro = macro_df.copy()
+    for col in infl_cols:
+        if col not in full_macro.columns:
+            full_macro = full_macro.merge(inflation_curve[["closeDate", col]], on="closeDate", how="left")
+    all_available = [c for c in full_macro.columns if c != "closeDate"]
+    default_picks = []
+    for candidate in ["Inflation_1y", "cds5y", "us10y", "usdbrl"]:
+        if candidate in all_available:
+            default_picks.append(candidate)
+
+    st.markdown("#### Feature Selection")
+    selected_levels = st.multiselect(
+        "Select macro variables for the model",
+        all_available,
+        default=default_picks,
+        key="macro_level_select",
+    )
+
+    if len(selected_levels) < 1:
+        st.warning("Select at least one macro variable.")
+        return None
+
+    # ---- Feature Engineering ----
+    st.markdown("#### Feature Engineering")
+    st.markdown("For each variable: **level z-score** (rolling 252d) + **momentum** (21d, 63d changes).")
+
+    features_df = build_macro_features(full_macro, selected_levels)
+    feature_cols = [c for c in features_df.columns if c != "closeDate"]
+
+    st.caption(f"Generated {len(feature_cols)} features from {len(selected_levels)} variables")
+
+    # ---- VIF ----
+    st.markdown("#### Multicollinearity Check (VIF)")
+    st.markdown("VIF > 10 indicates severe multicollinearity. Those features are auto-dropped.")
+
+    merged_for_vif = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
+    train_mask = merged_for_vif["closeDate"] <= pd.to_datetime(train_end)
+    train_features = merged_for_vif.loc[train_mask, feature_cols]
+
+    vif_table = compute_vif(train_features)
+    
+    col_vif, col_dropped = st.columns([0.6, 0.4])
+    with col_vif:
+        st.dataframe(vif_table, use_container_width=True, hide_index=True)
+
+    # Drop high VIF
+    good_features = vif_table[vif_table["VIF"] <= 10]["Feature"].tolist()
+    dropped = set(feature_cols) - set(good_features)
+
+    with col_dropped:
+        if dropped:
+            st.warning(f"Dropped {len(dropped)} features: {', '.join(sorted(dropped))}")
+        else:
+            st.success("All features pass VIF < 10")
+        st.metric("Features remaining", len(good_features))
+
+    feature_cols = good_features
+
+    if len(feature_cols) < 1:
+        st.error("No features remaining after VIF filter. Adjust variable selection.")
+        return None
+
+    # ---- Granger Causality ----
+    st.markdown("#### Granger Causality Tests")
+    st.markdown("Does each macro feature **Granger-cause** the spread? Tested on training data with up to 10 lags.")
+
+    granger_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
+    granger_train = granger_merged[granger_merged["closeDate"] <= pd.to_datetime(train_end)]
+
+    granger_results = run_granger_tests(
+        granger_train["spread"],
+        granger_train,
+        feature_cols,
+        max_lag=10,
+    )
+    st.dataframe(granger_results, use_container_width=True, hide_index=True)
+
+    n_significant = (granger_results["Significant (5%)"] == "✓").sum()
+    st.caption(f"{n_significant} of {len(granger_results)} features are significant at 5%.")
+
+    st.divider()
+
+    # ---- Regression Model ----
+    st.markdown("#### Fair Value Regression")
+
+    model_type = st.radio(
+        "Model",
+        ["Static OLS (train/test split)", "Rolling Ridge (walk-forward)"],
+        horizontal=True,
+        key="macro_model_type",
+    )
+
+    if model_type == "Static OLS (train/test split)":
+        result_df, betas, stats = compute_macro_residual_ols(
+            spread_df, features_df, feature_cols, train_end=train_end,
+        )
+
+        col_l, col_r = st.columns([0.35, 0.65])
+        with col_l:
+            st.markdown("**Coefficients**")
+            display_betas = betas.copy()
+            display_betas["Beta"] = display_betas["Beta"].map(lambda x: f"{x:.6f}")
+            display_betas["p-value"] = display_betas["p-value"].map(lambda x: f"{x:.4f}")
+            st.dataframe(display_betas, use_container_width=True, hide_index=True)
+
+            st.markdown("**Fit**")
+            fit_rows = [
+                ("Train R²", f"{stats['r2_train']:.4f}"),
+                ("Train Adj. R²", f"{stats['adj_r2_train']:.4f}"),
+                ("Test R²", f"{stats['r2_test']:.4f}" if not np.isnan(stats['r2_test']) else "N/A"),
+            ]
+            st.dataframe(pd.DataFrame(fit_rows, columns=["Metric", "Value"]), use_container_width=True, hide_index=True)
+
+        with col_r:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["spread"], mode="lines", name="Actual Spread"))
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["fair_value"], mode="lines", name="Macro Fair Value"))
+            fig.add_vline(x=str(pd.to_datetime(train_end).date()), line_dash="dash", line_color="orange")
+            fig.update_layout(title="Actual Spread vs Macro Fair Value", yaxis_tickformat=".2%", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
+    else:  # Rolling Ridge
+        ctrl1, ctrl2 = st.columns(2)
+        with ctrl1:
+            window = st.slider("Rolling window (business days)", 252, 756, 504, 63, key="macro_ridge_window")
+        with ctrl2:
+            alpha = st.slider("Ridge α (regularization)", 0.1, 10.0, 1.0, 0.1, key="macro_ridge_alpha")
+
+        with st.spinner("Running Rolling Ridge..."):
+            result_df, rolling_betas = compute_macro_residual_rolling_ridge(
+                spread_df, features_df, feature_cols,
+                window=window, alpha=alpha,
+            )
+
+        col_l, col_r = st.columns([0.4, 0.6])
+        with col_l:
+            fig_r2 = go.Figure()
+            fig_r2.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["rolling_r2"], mode="lines", name="Rolling R²"))
+            fig_r2.update_layout(title="Rolling In-Sample R²", height=300)
+            st.plotly_chart(fig_r2, use_container_width=True)
+
+        with col_r:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["spread"], mode="lines", name="Actual Spread"))
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["fair_value"], mode="lines", name="Rolling Ridge Fair Value"))
+            fig.update_layout(title="Actual Spread vs Rolling Ridge Fair Value", yaxis_tickformat=".2%", height=400)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Rolling betas
+        if len(rolling_betas) > 0:
+            st.markdown("**Coefficient Stability (Rolling Betas)**")
+            fig_betas = go.Figure()
+            beta_cols = [c for c in rolling_betas.columns if c != "closeDate"]
+            for col in beta_cols:
+                fig_betas.add_trace(go.Scatter(x=rolling_betas["closeDate"], y=rolling_betas[col], mode="lines", name=col))
+            fig_betas.update_layout(title="Rolling Ridge Betas Over Time", height=350)
+            st.plotly_chart(fig_betas, use_container_width=True)
+
+    # ---- Macro Residual ----
+    st.markdown("#### Macro Residual")
+
+    fig_res = go.Figure()
+    fig_res.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["macro_residual"], mode="lines", name="Macro Residual"))
+    fig_res.add_hline(y=0, line_color="lightgray", line_width=0.5)
+    if model_type == "Static OLS (train/test split)":
+        fig_res.add_vline(x=str(pd.to_datetime(train_end).date()), line_dash="dash", line_color="orange")
+    fig_res.update_layout(title="Macro Residual (Spread − Fair Value)", yaxis_tickformat=".2%", height=350)
+    st.plotly_chart(fig_res, use_container_width=True)
+
+    # ---- Cointegration ----
+    st.markdown("#### Cointegration Test (Engle-Granger)")
+    st.markdown("If the macro residual is stationary, the spread and macro drivers are **cointegrated** — mean reversion is structurally justified.")
+
+    resid_stats = stationarity_table(result_df["macro_residual"].dropna(), name="Macro Residual")
+    st.dataframe(resid_stats, use_container_width=True, hide_index=True)
+
+    # Engle-Granger on training levels
+    eg_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
+    eg_train = eg_merged[eg_merged["closeDate"] <= pd.to_datetime(train_end)]
+
+    if len(eg_train) > 100:
+        eg_result = run_engle_granger(eg_train["spread"], eg_train[feature_cols])
+        col_stat, col_verdict = st.columns([0.5, 0.5])
+        with col_stat:
+            st.metric("EG Test Statistic", f"{eg_result['stat']:.4f}")
+            st.metric("p-value", f"{eg_result['pvalue']:.4f}")
+        with col_verdict:
+            if eg_result["pvalue"] < 0.05:
+                st.success("Evidence of cointegration at 5% — mean reversion of the macro residual is statistically supported.")
+            elif eg_result["pvalue"] < 0.10:
+                st.warning("Weak evidence of cointegration (10% level). Proceed with caution.")
+            else:
+                st.error("No evidence of cointegration. Mean reversion may be spurious.")
+
+    return result_df
