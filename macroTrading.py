@@ -1,4 +1,3 @@
-
 import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
@@ -80,7 +79,7 @@ def _render_trading_block(regime_df, train_end, suffix):
             name=label,
         ))
     fig_regime.update_layout(title="Spread Colored by Regime", yaxis_tickformat=".2%", height=350)
-    st.plotly_chart(fig_regime, use_container_width=True)
+    st.plotly_chart(fig_regime)
 
     col1, col2, col3 = st.columns(3)
     total = len(regime_df)
@@ -102,7 +101,7 @@ def _render_trading_block(regime_df, train_end, suffix):
     display_stats["regime_std_bps"] = (display_stats["regime_std"] * 10000).round(2)
     st.dataframe(
         display_stats[["regime", "regime_label", "regime_mean_bps", "regime_std_bps"]],
-        hide_index=True, use_container_width=True,
+        hide_index=True,
     )
 
     all_regimes = sorted(trade_input["regime"].dropna().unique().astype(int).tolist())
@@ -167,7 +166,7 @@ def _render_trading_block(regime_df, train_end, suffix):
         height=420,
     )
     fig_z.add_trace(go.Scatter(x=[signal_df["closeDate"].iloc[0]], y=[0], yaxis="y2", mode="markers", marker=dict(opacity=0), showlegend=False))
-    st.plotly_chart(fig_z, use_container_width=True)
+    st.plotly_chart(fig_z)
 
     backtest_df = run_backtest(
         signal_df, slippage_bps=slippage_bps,
@@ -192,7 +191,7 @@ def _render_trading_block(regime_df, train_end, suffix):
         yaxis2=dict(overlaying="y", side="right", showticklabels=False, showgrid=False, range=[0, 1]),
         height=280, bargap=0, barmode="overlay",
     )
-    st.plotly_chart(fig_pos, use_container_width=True)
+    st.plotly_chart(fig_pos)
 
     total_slippage = backtest_df["slippage_cost"].sum()
     total_roll = backtest_df["roll_cost"].sum()
@@ -213,7 +212,7 @@ def _render_trading_block(regime_df, train_end, suffix):
     fig_pnl.add_hline(y=0, line_color="lightgray", line_width=0.5)
     fig_pnl.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
     fig_pnl.update_layout(title="Cumulative Net P&L (Macro Strategy)", yaxis_title="P&L (bps)", height=400)
-    st.plotly_chart(fig_pnl, use_container_width=True)
+    st.plotly_chart(fig_pnl)
 
     fig_dd = go.Figure()
     fig_dd.add_trace(go.Scatter(
@@ -224,7 +223,7 @@ def _render_trading_block(regime_df, train_end, suffix):
     ))
     fig_dd.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
     fig_dd.update_layout(title="Drawdown", yaxis_title="Drawdown (bps)", height=300)
-    st.plotly_chart(fig_dd, use_container_width=True)
+    st.plotly_chart(fig_dd)
 
     st.subheader("Performance Metrics")
     trade_log = build_trade_log(signal_df)
@@ -258,7 +257,7 @@ def _render_trading_block(regime_df, train_end, suffix):
             "Train": _fmt(metrics["train"].get(key), fmt),
             "Test":  _fmt(metrics["test"].get(key),  fmt),
         })
-    st.dataframe(pd.DataFrame(perf_data), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(perf_data), hide_index=True)
 
     st.subheader("Monthly P&L Heatmap")
     monthly = backtest_df.copy()
@@ -279,7 +278,7 @@ def _render_trading_block(regime_df, train_end, suffix):
         textfont={"size": 10},
     ))
     fig_heat.update_layout(title="Monthly Net P&L (bps)", height=max(300, len(monthly_pivot) * 30 + 80))
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat)
 
     st.subheader("Trade Log")
     if len(trade_log) > 0:
@@ -295,7 +294,7 @@ def _render_trading_block(regime_df, train_end, suffix):
         if "regime_label" in display_log.columns:
             show_cols.append("regime_label")
         show_cols += ["entry_z", "exit_z", "pnl_bps", "holding_days", "exit_type"]
-        st.dataframe(display_log[show_cols], hide_index=True, use_container_width=True)
+        st.dataframe(display_log[show_cols], hide_index=True)
     else:
         st.info("No trades generated with current parameters.")
 
@@ -355,7 +354,7 @@ def render(result_df, inflation_curve, spread_df, copom_df, train_end="2017-12-3
         color_map = {0: "red", 1: "green", 2: "gray"}
         regime_df = classify_copom_regime(result_df, copom_df)
         _render_copom_inspector(copom_df)
-        backtest_df, signal_df = _render_trading_block(regime_df, train_end, suffix="copom")
+        _render_trading_block(regime_df, train_end, suffix="copom")
 
         st.divider()
 

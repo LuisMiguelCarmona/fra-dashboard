@@ -290,7 +290,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
     with granger:
         # ---- Granger Causality ----
         st.markdown("#### Granger Causality Tests")
-        st.markdown("Does each macro feature **Granger-cause** the spread? Tested on training data with up to 10 lags.")
+        st.markdown("Does each macro feature **Granger-cause** the spread?")
 
         granger_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
         granger_train = granger_merged[granger_merged["closeDate"] <= pd.to_datetime(train_end)]
@@ -364,7 +364,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
         with col_l:
             fig_r2 = go.Figure()
             fig_r2.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["rolling_r2"], mode="lines", name="Rolling R²"))
-            fig_r2.update_layout(title="Rolling In-Sample R²", height=300)
+            fig_r2.update_layout(title="In-Sample Rolling R²", height=300)
             st.plotly_chart(fig_r2)
 
         with col_r:
@@ -406,6 +406,8 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
 
     if len(eg_train) > 100:
         eg_result = run_engle_granger(eg_train["spread"], eg_train[feature_cols])
+        if eg_result.get("fallback"):
+            st.caption("Fallback mode: using ADF on OLS residuals. Interpret as an approximate residual-stationarity check, not a formal MacKinnon cointegration p-value.")
         col_stat, col_verdict = st.columns([0.5, 0.5])
         with col_stat:
             c1, c2 = st.columns(2)

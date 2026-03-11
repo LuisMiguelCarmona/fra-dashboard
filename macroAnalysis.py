@@ -1,11 +1,7 @@
-"""
-Macro Fair Value Analytics
-Feature engineering, VIF, Granger causality, regression models, cointegration.
-"""
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-from statsmodels.tsa.stattools import grangercausalitytests, adfuller
+from statsmodels.tsa.stattools import grangercausalitytests, adfuller, coint
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
@@ -58,11 +54,12 @@ def run_granger_tests(spread_series, feature_df, feature_cols, max_lag=10, lag=5
             gc = grangercausalitytests(data[["spread", col]], maxlag=max_lag, verbose=False)
             f_stat = gc[lag][0]["ssr_ftest"][0]
             p_val = gc[lag][0]["ssr_ftest"][1]
+            used_lag = lag
         except Exception:
-            lag, f_stat, p_val = np.nan, np.nan, np.nan
+            used_lag, f_stat, p_val = np.nan, np.nan, np.nan
         results.append({
             "Feature": col,
-            "Lag": lag,
+            "Lag": used_lag,
             "F-stat": round(f_stat, 2) if not np.isnan(f_stat) else np.nan,
             "p-value": round(p_val, 4) if not np.isnan(p_val) else np.nan,
             "Significant (5%)": "✓" if (not np.isnan(p_val) and p_val < 0.05) else "✗"})
@@ -72,19 +69,20 @@ def run_granger_tests(spread_series, feature_df, feature_cols, max_lag=10, lag=5
 
 def run_engle_granger(y, X_df):
     common = y.dropna().index.intersection(X_df.dropna().index)
-    y_c = y.loc[common]
-    X_c = X_df.loc[common]
+    y_c = y.loc[common].values
+    X_c = X_df.loc[common].values
 
     if len(common) < 100:
-        return {"stat": np.nan, "pvalue": np.nan}
-
-    X_const = sm.add_constant(X_c)
-    model = sm.OLS(y_c, X_const).fit()
-    residuals = model.resid
-
-    adf_stat, adf_p, _, _, crit, _ = adfuller(residuals)
-
-    return {"stat": adf_stat,"pvalue": adf_p,"crit_values": crit,"residuals": residuals,}
+        return {"stat": np.nan, "pvalue": np.nan, "fallback": False}
+    
+    try:
+        eg_stat, eg_pvalue, eg_crit = coint(y_c, X_c)
+        return {"stat": eg_stat, "pvalue": eg_pvalue, "crit_values": eg_crit, "fallback": False}
+    except (IndexError, ValueError):
+        X_const = sm.add_constant(X_c)
+        model = sm.OLS(y_c, X_const).fit()
+        adf_stat, adf_p, _, _, crit, _ = adfuller(model.resid)
+        return {"stat": adf_stat, "pvalue": adf_p, "crit_values": crit, "fallback": True}
 
 
 # =================== Static OLS ===================
