@@ -14,13 +14,6 @@ from sklearn.preprocessing import StandardScaler
 # =================== Feature Engineering ===================
 
 def build_macro_features(macro_df, level_cols, momentum_windows=None, zscore_window=252):
-    """
-    From raw macro levels, build:
-      - z-scored levels (rolling window)
-      - momentum (diff over N days)
-
-    Returns DataFrame with closeDate + engineered features.
-    """
     if momentum_windows is None:
         momentum_windows = [21, 63]
 
@@ -28,13 +21,10 @@ def build_macro_features(macro_df, level_cols, momentum_windows=None, zscore_win
 
     for col in level_cols:
         s = macro_df[col]
-
-        # Level z-score
         roll_mean = s.rolling(zscore_window, min_periods=60).mean()
         roll_std = s.rolling(zscore_window, min_periods=60).std()
         out[f"{col}_z"] = (s - roll_mean) / roll_std
 
-        # Momentum
         for w in momentum_windows:
             out[f"{col}_mom{w}d"] = s.diff(w)
 
@@ -44,11 +34,6 @@ def build_macro_features(macro_df, level_cols, momentum_windows=None, zscore_win
 # =================== VIF ===================
 
 def compute_vif(X_df):
-    """
-    Variance Inflation Factor for multicollinearity check.
-    X_df: DataFrame of features (no constant, no date).
-    Returns DataFrame with ['Feature', 'VIF'] sorted descending.
-    """
     X_clean = X_df.dropna()
     if len(X_clean) < 10 or len(X_clean.columns) < 2:
         return pd.DataFrame({"Feature": X_clean.columns, "VIF": [np.nan] * len(X_clean.columns)})
@@ -58,59 +43,34 @@ def compute_vif(X_df):
     for i, col in enumerate(X_const.columns):
         if col == "const":
             continue
-        vif_data.append({
-            "Feature": col,
-            "VIF": variance_inflation_factor(X_const.values, i),
-        })
+        vif_data.append({"Feature": col,"VIF": variance_inflation_factor(X_const.values, i)})
     return pd.DataFrame(vif_data).sort_values("VIF", ascending=False).reset_index(drop=True)
 
 
 # =================== Granger Causality ===================
-
-def run_granger_tests(spread_series, feature_df, feature_cols, max_lag=10):
-    """
-    Test if each feature Granger-causes the spread.
-    Returns DataFrame with Feature, Best Lag, F-stat, p-value.
-    """
+def run_granger_tests(spread_series, feature_df, feature_cols, max_lag=10, lag=5):
     results = []
-
     for col in feature_cols:
         try:
-            data = pd.DataFrame({
-                "spread": spread_series,
-                col: feature_df[col],
-            }).dropna()
-
+            data = pd.DataFrame({"spread": spread_series, col: feature_df[col]}).dropna()
             if len(data) < max_lag + 50:
                 continue
-
             gc = grangercausalitytests(data[["spread", col]], maxlag=max_lag, verbose=False)
-            best_lag = min(gc, key=lambda k: gc[k][0]["ssr_ftest"][1])
-            f_stat = gc[best_lag][0]["ssr_ftest"][0]
-            p_val = gc[best_lag][0]["ssr_ftest"][1]
+            f_stat = gc[lag][0]["ssr_ftest"][0]
+            p_val = gc[lag][0]["ssr_ftest"][1]
         except Exception:
-            best_lag, f_stat, p_val = np.nan, np.nan, np.nan
-
+            lag, f_stat, p_val = np.nan, np.nan, np.nan
         results.append({
             "Feature": col,
-            "Best Lag": best_lag,
+            "Lag": lag,
             "F-stat": round(f_stat, 2) if not np.isnan(f_stat) else np.nan,
             "p-value": round(p_val, 4) if not np.isnan(p_val) else np.nan,
-            "Significant (5%)": "✓" if (not np.isnan(p_val) and p_val < 0.05) else "✗",
-        })
-
+            "Significant (5%)": "✓" if (not np.isnan(p_val) and p_val < 0.05) else "✗"})
     return pd.DataFrame(results).sort_values("p-value").reset_index(drop=True)
-
 
 # =================== Cointegration ===================
 
 def run_engle_granger(y, X_df):
-    """
-    Engle-Granger cointegration test.
-    Step 1: OLS y ~ X
-    Step 2: ADF on residuals
-    Returns dict with stat, pvalue, residuals.
-    """
     common = y.dropna().index.intersection(X_df.dropna().index)
     y_c = y.loc[common]
     X_c = X_df.loc[common]
@@ -124,12 +84,7 @@ def run_engle_granger(y, X_df):
 
     adf_stat, adf_p, _, _, crit, _ = adfuller(residuals)
 
-    return {
-        "stat": adf_stat,
-        "pvalue": adf_p,
-        "crit_values": crit,
-        "residuals": residuals,
-    }
+    return {"stat": adf_stat,"pvalue": adf_p,"crit_values": crit,"residuals": residuals,}
 
 
 # =================== Static OLS ===================
@@ -141,11 +96,7 @@ def compute_macro_residual_ols(spread_df, features_df, feature_cols, train_end="
     """
     train_end = pd.to_datetime(train_end)
 
-    df = spread_df.merge(
-        features_df[["closeDate"] + feature_cols],
-        on="closeDate", how="inner",
-    ).dropna().copy()
-
+    df = spread_df.merge(features_df[["closeDate"] + feature_cols],on="closeDate", how="inner").dropna().copy()
     df["is_train"] = df["closeDate"] <= train_end
     train = df[df["is_train"]]
 
@@ -160,12 +111,7 @@ def compute_macro_residual_ols(spread_df, features_df, feature_cols, train_end="
     df["fair_value"] = model.predict(X_full)
     df["macro_residual"] = df["spread"] - df["fair_value"]
 
-    betas = pd.DataFrame({
-        "Variable": model.params.index,
-        "Beta": model.params.values,
-        "Std Err": model.bse.values,
-        "p-value": model.pvalues.values,
-    })
+    betas = pd.DataFrame({"Variable": model.params.index,"Beta": model.params.values,"Std Err": model.bse.values,"p-value": model.pvalues.values})
 
     # Test R²
     test = df[~df["is_train"]]
@@ -175,32 +121,15 @@ def compute_macro_residual_ols(spread_df, features_df, feature_cols, train_end="
         ss_tot = ((test["spread"] - test["spread"].mean()) ** 2).sum()
         r2_test = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
 
-    stats = {
-        "r2_train": model.rsquared,
-        "adj_r2_train": model.rsquared_adj,
-        "r2_test": r2_test,
-    }
+    stats = {"r2_train": model.rsquared,"adj_r2_train": model.rsquared_adj,"r2_test": r2_test}
 
     return df, betas, stats
 
 
 # =================== Rolling Ridge ===================
 
-def compute_macro_residual_rolling_ridge(
-    spread_df, features_df, feature_cols,
-    window=504, alpha=1.0, min_train=252,
-):
-    """
-    Rolling Ridge: at each date t, fit on [t-window : t-1], predict at t.
-    Fully out-of-sample by construction.
-
-    Returns (df with fair_value + macro_residual + rolling_r2, rolling_betas_df).
-    """
-    df = spread_df.merge(
-        features_df[["closeDate"] + feature_cols],
-        on="closeDate", how="inner",
-    ).dropna().reset_index(drop=True)
-
+def compute_macro_residual_rolling_ridge(spread_df, features_df, feature_cols,window=504, alpha=1.0, min_train=252):
+    df = spread_df.merge(features_df[["closeDate"] + feature_cols],on="closeDate", how="inner",).dropna().reset_index(drop=True)
     n = len(df)
     fair_values = np.full(n, np.nan)
     rolling_r2 = np.full(n, np.nan)
@@ -208,10 +137,10 @@ def compute_macro_residual_rolling_ridge(
 
     for t in range(min_train, n):
         start = max(0, t - window)
-        train_idx = slice(start, t)
+        train_idx = slice(start, t-1)
 
-        X_train = df.loc[train_idx, feature_cols].values
-        y_train = df.loc[train_idx, "spread"].values
+        X_train = df.iloc[start:t][feature_cols].values
+        y_train = df.iloc[start:t]["spread"].values
 
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X_train)
@@ -219,23 +148,17 @@ def compute_macro_residual_rolling_ridge(
         model = Ridge(alpha=alpha)
         model.fit(X_scaled, y_train)
 
-        # In-sample R²
         y_pred_train = model.predict(X_scaled)
         ss_res = ((y_train - y_pred_train) ** 2).sum()
         ss_tot = ((y_train - y_train.mean()) ** 2).sum()
         rolling_r2[t] = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
 
-        # Out-of-sample prediction at t
-        X_t = df.loc[[t], feature_cols].values
+        X_t = df.iloc[[t]][feature_cols].values
         X_t_scaled = scaler.transform(X_t)
         fair_values[t] = model.predict(X_t_scaled)[0]
 
-        # Unscaled betas for interpretability
         betas_unscaled = model.coef_ / scaler.scale_
-        betas_list.append({
-            "closeDate": df.loc[t, "closeDate"],
-            **{col: b for col, b in zip(feature_cols, betas_unscaled)},
-        })
+        betas_list.append({"closeDate": df.loc[t, "closeDate"],**{col: b for col, b in zip(feature_cols, betas_unscaled)}})
 
     df["fair_value"] = fair_values
     df["macro_residual"] = df["spread"] - df["fair_value"]

@@ -64,7 +64,7 @@ def render(macro_df, spread_df, inflation_curve, nominal_curve):
     cds_cols = sorted([c for c in macro_df.columns if c.lower().startswith("cds")])
     if cds_cols:
         st.markdown("#### Brazil CDS Spreads (Sovereign Risk)")
-        st.caption("CDS denominated in USD — note inherent correlation with USDBRL.")
+        st.caption("CDS are denominated in USD — note inherent correlation with USDBRL.")
 
         col_l, col_r = st.columns(2)
 
@@ -92,7 +92,7 @@ def render(macro_df, spread_df, inflation_curve, nominal_curve):
     # =================== US 10Y ===================
 
     if "us10y" in macro_df.columns:
-        st.markdown("#### US 10Y Treasury (Global Duration Driver)")
+        st.markdown("#### US 10Y Treasury")
 
         col_l, col_r = st.columns(2)
 
@@ -145,7 +145,7 @@ def render(macro_df, spread_df, inflation_curve, nominal_curve):
 
     st.divider()
     st.subheader("Correlation Matrix (Daily Changes)")
-    st.markdown("CDS in USD has inherent correlation with USDBRL.")
+    st.markdown("Note that, as said previously, this Brazil CDS is in USD and has an inherent correlation with USDBRL.")
 
     corr_df = spread_df[["closeDate", "spread"]].copy()
     corr_cols = []
@@ -193,9 +193,8 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
     st.divider()
     st.subheader("Macro Fair Value Model")
     st.markdown("""
-    We model: **Spread = f(macro features)** and trade the residual.
-    Unlike the PCA approach (R² ≈ 0.98 — near-identity), macro drivers provide
-    an economically meaningful fair value.
+    Lets model **Spread = f(macro features)** and trade the residual.
+    Unlike the PCA approach (R² ≈ 0.98 — near-identity), macro drivers provide an economically meaningful fair value.
     """)
 
     infl_cols = [c for c in inflation_curve.columns if c.startswith("Inflation_")]
@@ -212,12 +211,41 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             default_picks.append(candidate)
 
     st.markdown("#### Feature Selection")
-    selected_levels = st.multiselect(
-        "Select macro variables for the model",
-        all_available,
-        default=default_picks,
-        key="macro_level_select",
-    )
+    macro1, macro2, macro3, macro4 = st.columns(4)
+    selected_levels = []
+
+    with macro1:
+        st.markdown("##### Inflation")
+        if "Inflation_1y" in all_available and st.checkbox("Inflation 1Y", value=True, key="m_infl1y"):
+            selected_levels.append("Inflation_1y")
+        if "Inflation_2y" in all_available and st.checkbox("Inflation 2Y", key="m_infl2y"):
+            selected_levels.append("Inflation_2y")
+        if "Inflation_5y" in all_available and st.checkbox("Inflation 5Y", key="m_infl5y"):
+            selected_levels.append("Inflation_5y")
+        if "Inflation_10y" in all_available and st.checkbox("Inflation 10Y", key="m_infl10y"):
+            selected_levels.append("Inflation_10y")
+
+    with macro2:
+        st.markdown("##### CDS Brazil")
+        if "cds1y" in all_available and st.checkbox("CDS 1Y", key="m_cds1y"):
+            selected_levels.append("cds1y")
+        if "cds2y" in all_available and st.checkbox("CDS 2Y", key="m_cds2y"):
+            selected_levels.append("cds2y")
+        if "cds5y" in all_available and st.checkbox("CDS 5Y", key="m_cds5y"):
+            selected_levels.append("cds5y")
+        if "cds10y" in all_available and st.checkbox("CDS 10Y", value=True, key="m_cds10y"):
+            selected_levels.append("cds10y")
+
+    with macro3:
+        st.markdown("##### US Treasury")
+        if "us10y" in all_available and st.checkbox("US 10Y", value=True, key="m_us10y"):
+            selected_levels.append("us10y")
+
+    with macro4:
+        st.markdown("##### USDBRL")
+        if "usdbrl" in all_available and st.checkbox("USDBRL", value=True, key="m_usdbrl"):
+            selected_levels.append("usdbrl")
+
 
     if len(selected_levels) < 1:
         st.warning("Select at least one macro variable.")
@@ -244,7 +272,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
     
     col_vif, col_dropped = st.columns([0.6, 0.4])
     with col_vif:
-        st.dataframe(vif_table, use_container_width=True, hide_index=True)
+        st.dataframe(vif_table, hide_index=True)
 
     # Drop high VIF
     good_features = vif_table[vif_table["VIF"] <= 10]["Feature"].tolist()
@@ -276,7 +304,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
         feature_cols,
         max_lag=10,
     )
-    st.dataframe(granger_results, use_container_width=True, hide_index=True)
+    st.dataframe(granger_results, hide_index=True)
 
     n_significant = (granger_results["Significant (5%)"] == "✓").sum()
     st.caption(f"{n_significant} of {len(granger_results)} features are significant at 5%.")
@@ -304,7 +332,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             display_betas = betas.copy()
             display_betas["Beta"] = display_betas["Beta"].map(lambda x: f"{x:.6f}")
             display_betas["p-value"] = display_betas["p-value"].map(lambda x: f"{x:.4f}")
-            st.dataframe(display_betas, use_container_width=True, hide_index=True)
+            st.dataframe(display_betas, hide_index=True)
 
             st.markdown("**Fit**")
             fit_rows = [
@@ -312,7 +340,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
                 ("Train Adj. R²", f"{stats['adj_r2_train']:.4f}"),
                 ("Test R²", f"{stats['r2_test']:.4f}" if not np.isnan(stats['r2_test']) else "N/A"),
             ]
-            st.dataframe(pd.DataFrame(fit_rows, columns=["Metric", "Value"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(fit_rows, columns=["Metric", "Value"]), hide_index=True)
 
         with col_r:
             fig = go.Figure()
@@ -320,7 +348,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["fair_value"], mode="lines", name="Macro Fair Value"))
             fig.add_vline(x=str(pd.to_datetime(train_end).date()), line_dash="dash", line_color="orange")
             fig.update_layout(title="Actual Spread vs Macro Fair Value", yaxis_tickformat=".2%", height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
 
     else:  # Rolling Ridge
         ctrl1, ctrl2 = st.columns(2)
@@ -340,14 +368,14 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             fig_r2 = go.Figure()
             fig_r2.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["rolling_r2"], mode="lines", name="Rolling R²"))
             fig_r2.update_layout(title="Rolling In-Sample R²", height=300)
-            st.plotly_chart(fig_r2, use_container_width=True)
+            st.plotly_chart(fig_r2)
 
         with col_r:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["spread"], mode="lines", name="Actual Spread"))
             fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["fair_value"], mode="lines", name="Rolling Ridge Fair Value"))
             fig.update_layout(title="Actual Spread vs Rolling Ridge Fair Value", yaxis_tickformat=".2%", height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig)
 
         # Rolling betas
         if len(rolling_betas) > 0:
@@ -357,7 +385,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             for col in beta_cols:
                 fig_betas.add_trace(go.Scatter(x=rolling_betas["closeDate"], y=rolling_betas[col], mode="lines", name=col))
             fig_betas.update_layout(title="Rolling Ridge Betas Over Time", height=350)
-            st.plotly_chart(fig_betas, use_container_width=True)
+            st.plotly_chart(fig_betas)
 
     # ---- Macro Residual ----
     st.markdown("#### Macro Residual")
@@ -368,14 +396,14 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
     if model_type == "Static OLS (train/test split)":
         fig_res.add_vline(x=str(pd.to_datetime(train_end).date()), line_dash="dash", line_color="orange")
     fig_res.update_layout(title="Macro Residual (Spread − Fair Value)", yaxis_tickformat=".2%", height=350)
-    st.plotly_chart(fig_res, use_container_width=True)
+    st.plotly_chart(fig_res)
 
     # ---- Cointegration ----
     st.markdown("#### Cointegration Test (Engle-Granger)")
     st.markdown("If the macro residual is stationary, the spread and macro drivers are **cointegrated** — mean reversion is structurally justified.")
 
     resid_stats = stationarity_table(result_df["macro_residual"].dropna(), name="Macro Residual")
-    st.dataframe(resid_stats, use_container_width=True, hide_index=True)
+    st.dataframe(resid_stats, hide_index=True)
 
     # Engle-Granger on training levels
     eg_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()

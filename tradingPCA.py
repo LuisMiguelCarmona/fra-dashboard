@@ -219,8 +219,9 @@ def build_trade_log(signal_df):
             direction = "long" if df["position"].iloc[entry_idx] == 1.0 else "short"
             sign = 1.0 if direction == "long" else -1.0
 
-            entry_spread = df["residual_spread"].iloc[entry_idx]
-            exit_spread = df["residual_spread"].iloc[i]
+            pnl_col = "spread" if "spread" in df.columns else "residual_spread"
+            entry_spread = df[pnl_col].iloc[entry_idx]
+            exit_spread = df[pnl_col].iloc[i]
             pnl = sign * (exit_spread - entry_spread)
 
             trade = {

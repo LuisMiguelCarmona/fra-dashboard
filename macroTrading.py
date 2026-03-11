@@ -16,43 +16,21 @@ REGIME_COLORS_BG = {
 }
 
 
-def classify_macro_regime(result_df, inflation_curve, window=21):
-    """
-    Rule-based macro regime using inflation momentum:
-      - Tightening (0): inflation expectations rising → 1y1y reprices up → spread compresses
-      - Easing (1): inflation expectations falling → 1y1y drops → spread widens
-      - Transitional (2): no clear trend
-    """
+def classify_macro_regime(result_df, inflation_curve, train_end="2017-12-31", window=21):
     df = result_df.copy()
-
     infl = inflation_curve[["closeDate", "Inflation_1y"]].copy()
     df = df.merge(infl, on="closeDate", how="left")
-
     df["infl_delta"] = df["Inflation_1y"].diff(window)
-
-    # Classify
-    threshold = df["infl_delta"].rolling(252, min_periods=60).std() * 0.5
-    conditions = [
-        df["infl_delta"] > threshold,    # rising inflation
-        df["infl_delta"] < -threshold,   # falling inflation
-    ]
+    train_end = pd.to_datetime(train_end)
+    rolling_std = df["infl_delta"].rolling(252, min_periods=60).std() * 0.5
+    threshold = rolling_std.where(df["closeDate"] <= train_end).ffill()
+    conditions = [df["infl_delta"] > threshold,df["infl_delta"] < -threshold]
     df["regime"] = np.select(conditions, [0, 1], default=2).astype(float)
     df["regime_label"] = df["regime"].map(REGIME_LABELS)
-
     return df
 
 
 def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
-    """
-    Render macro trading section.
-
-    Parameters
-    ----------
-    result_df : from macro.render_model() — has closeDate, spread, macro_residual
-    inflation_curve : for regime classification
-    spread_df : for backtest P&L
-    train_end : training cutoff
-    """
     if result_df is None or "macro_residual" not in result_df.columns:
         st.warning("Run the Macro Fair Value model first.")
         return
@@ -70,7 +48,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
     - **Transitional**: no clear direction — avoid trading
     """)
 
-    regime_df = classify_macro_regime(result_df, inflation_curve)
+    regime_df = classify_macro_regime(result_df, inflation_curve, train_end)
 
     # Rename for compatibility with trading functions
     regime_df = regime_df.rename(columns={"macro_residual": "residual_spread"})
@@ -86,7 +64,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
             name=label,
         ))
     fig_regime.update_layout(title="Spread Colored by Macro Regime", yaxis_tickformat=".2%", height=350)
-    st.plotly_chart(fig_regime, use_container_width=True)
+    st.plotly_chart(fig_regime)
 
     # Regime distribution
     col1, col2, col3 = st.columns(3)
@@ -112,7 +90,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
     display_stats["regime_std_bps"] = (display_stats["regime_std"] * 10000).round(2)
     st.dataframe(
         display_stats[["regime", "regime_label", "regime_mean_bps", "regime_std_bps"]],
-        hide_index=True, use_container_width=True,
+        hide_index=True,
     )
 
     # =================== Controls ===================
@@ -182,7 +160,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
         height=420,
     )
     fig_z.add_trace(go.Scatter(x=[signal_df["closeDate"].iloc[0]], y=[0], yaxis="y2", mode="markers", marker=dict(opacity=0), showlegend=False))
-    st.plotly_chart(fig_z, use_container_width=True)
+    st.plotly_chart(fig_z)
 
     # =================== Backtest ===================
 
@@ -210,7 +188,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
         yaxis2=dict(overlaying="y", side="right", showticklabels=False, showgrid=False, range=[0, 1]),
         height=280, bargap=0, barmode="overlay",
     )
-    st.plotly_chart(fig_pos, use_container_width=True)
+    st.plotly_chart(fig_pos)
 
     # Cost summary
     total_slippage = backtest_df["slippage_cost"].sum()
@@ -234,7 +212,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
     fig_pnl.add_hline(y=0, line_color="lightgray", line_width=0.5)
     fig_pnl.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
     fig_pnl.update_layout(title="Cumulative Net P&L (Macro Strategy)", yaxis_title="P&L (bps)", height=400)
-    st.plotly_chart(fig_pnl, use_container_width=True)
+    st.plotly_chart(fig_pnl)
 
     # =================== Drawdown ===================
 
@@ -247,7 +225,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
     ))
     fig_dd.add_vline(x=str(TRAINING_DATE.date()), line_dash="dash", line_color="orange")
     fig_dd.update_layout(title="Drawdown", yaxis_title="Drawdown (bps)", height=300)
-    st.plotly_chart(fig_dd, use_container_width=True)
+    st.plotly_chart(fig_dd)
 
     # =================== Performance Metrics ===================
 
@@ -284,7 +262,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
             "Train": _fmt(metrics["train"].get(key), fmt),
             "Test": _fmt(metrics["test"].get(key), fmt),
         })
-    st.dataframe(pd.DataFrame(perf_data), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(perf_data), hide_index=True)
 
     # =================== Monthly Heatmap ===================
 
@@ -307,7 +285,7 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
         textfont={"size": 10},
     ))
     fig_heat.update_layout(title="Monthly Net P&L (bps)", height=max(300, len(monthly_pivot) * 30 + 80))
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat)
 
     # =================== Trade Log ===================
 
@@ -325,6 +303,6 @@ def render(result_df, inflation_curve, spread_df, train_end="2017-12-31"):
         if "regime_label" in display_log.columns:
             show_cols.append("regime_label")
         show_cols += ["entry_z", "exit_z", "pnl_bps", "holding_days", "exit_type"]
-        st.dataframe(display_log[show_cols], hide_index=True, use_container_width=True)
+        st.dataframe(display_log[show_cols], hide_index=True)
     else:
         st.info("No trades generated with current parameters.")
