@@ -67,3 +67,28 @@ def build_macro_df(macro_factors):
         result = result.merge(df[["closeDate", name]], on="closeDate", how="left")
     result = result.sort_values("closeDate").reset_index(drop=True)
     return result
+
+
+def load_copom_sentiment(path):
+    REGIME_MAP = {"TIGHTENING": 0, "EASING": 1, "TRANSITIONAL": 2}
+
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    rows = []
+    for item in raw["results"]:
+        c = item.get("classification", {})
+        regime_str = c.get("regime", "TRANSITIONAL").upper()
+        rows.append({
+            "meeting_date":    pd.to_datetime(c.get("meeting_date")),
+            "regime":          REGIME_MAP.get(regime_str, 2),
+            "regime_label":    regime_str.capitalize(),
+            "sentiment_score": c.get("sentiment_score", 0.0),
+            "key_passages":    c.get("key_passages", []),
+            "reasoning":       c.get("reasoning", ""),
+            "source_file":     item.get("source_file", ""),
+        })
+
+    df = pd.DataFrame(rows).sort_values("meeting_date")
+    df = df[df['meeting_date'] >= '2006-01-01'].reset_index(drop=True)
+    return df

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 
-from data_loader import load_json, build_nominal_curve_df, build_inflation_curve_df, spread_fra, build_macro_df
+from data_loader import load_json, build_nominal_curve_df, build_inflation_curve_df, spread_fra, build_macro_df, load_copom_sentiment
 import curveEvolution
 import stationarity
 import pca
@@ -32,6 +32,14 @@ def load_all_data():
 
     macro_df = macro_df.merge(inflation_curve,on="closeDate", how="left")
 
+    try:
+        copom_df = load_copom_sentiment(r"data\copom_regime_classification.json")
+    except Exception as e:
+        copom_df = None
+        st.warning(f"Could not load COPOM sentiment file: {e}")
+
+
+
     return {
         "spot1y": spot1y,
         "spot2y": spot2y,
@@ -43,12 +51,13 @@ def load_all_data():
         "inflation_curve": inflation_curve,
         "spread_df": spread_df,
         "macro_df": macro_df,
+        "copom_df": copom_df
     }
 
 
 
 def main():
-    st.title("FRA Spreads Dashboard — Case Study")
+    st.title("FRA Spreads Dashboard - Case Study")
 
     data = load_all_data()
     max_date = data['spot1y']['closeDate'].max().date()
@@ -125,7 +134,7 @@ def main():
     with tab1:
         macro.render(data['macro_df'], data['spread_df'], data['inflation_curve'], data['nominal_curve'])        
         result_df = macro.render_model(data['macro_df'], data['spread_df'], data['inflation_curve'], TRAIN_END)
-        macroTrading.render(result_df, data['inflation_curve'], data['spread_df'], TRAIN_END)
+        macroTrading.render(result_df, data['inflation_curve'], data['spread_df'], data['copom_df'], TRAIN_END)
 
     with tab2:
         pca_df, start_date,end_date = pca.plot_pca(data['nominal_curve'])

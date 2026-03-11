@@ -64,7 +64,7 @@ def render(macro_df, spread_df, inflation_curve, nominal_curve):
     cds_cols = sorted([c for c in macro_df.columns if c.lower().startswith("cds")])
     if cds_cols:
         st.markdown("#### Brazil CDS Spreads (Sovereign Risk)")
-        st.caption("CDS are denominated in USD — note inherent correlation with USDBRL.")
+        st.caption("CDS are denominated in USD - note inherent correlation with USDBRL.")
 
         col_l, col_r = st.columns(2)
 
@@ -260,54 +260,51 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
 
     st.caption(f"Generated {len(feature_cols)} features from {len(selected_levels)} variables")
 
-    # ---- VIF ----
-    st.markdown("#### Multicollinearity Check (VIF)")
-    st.markdown("VIF > 10 indicates severe multicollinearity. Those features are auto-dropped.")
+    vif, granger = st.columns(2)
+    with vif:
+        # ---- VIF ----
+        st.markdown("#### Multicollinearity Check (VIF)")
+        st.markdown("VIF > 10 indicates severe multicollinearity. Those features are auto-dropped.")
 
-    merged_for_vif = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
-    train_mask = merged_for_vif["closeDate"] <= pd.to_datetime(train_end)
-    train_features = merged_for_vif.loc[train_mask, feature_cols]
+        merged_for_vif = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
+        train_mask = merged_for_vif["closeDate"] <= pd.to_datetime(train_end)
+        train_features = merged_for_vif.loc[train_mask, feature_cols]
 
-    vif_table = compute_vif(train_features)
-    
-    col_vif, col_dropped = st.columns([0.6, 0.4])
-    with col_vif:
+        vif_table = compute_vif(train_features)
+        
         st.dataframe(vif_table, hide_index=True)
 
-    # Drop high VIF
-    good_features = vif_table[vif_table["VIF"] <= 10]["Feature"].tolist()
-    dropped = set(feature_cols) - set(good_features)
-
-    with col_dropped:
+        good_features = vif_table[vif_table["VIF"] <= 10]["Feature"].tolist()
+        dropped = set(feature_cols) - set(good_features)
         if dropped:
-            st.warning(f"Dropped {len(dropped)} features: {', '.join(sorted(dropped))}")
+            st.markdown(f"Dropped {len(dropped)} features: {', '.join(sorted(dropped))}")
         else:
-            st.success("All features pass VIF < 10")
-        st.metric("Features remaining", len(good_features))
+            st.markdown("All features pass VIF < 10")
+        
+        feature_cols = good_features
 
-    feature_cols = good_features
+        if len(feature_cols) < 1:
+            st.error("No features remaining after VIF filter. Adjust variable selection.")
+            return None
+        
+    with granger:
+        # ---- Granger Causality ----
+        st.markdown("#### Granger Causality Tests")
+        st.markdown("Does each macro feature **Granger-cause** the spread? Tested on training data with up to 10 lags.")
 
-    if len(feature_cols) < 1:
-        st.error("No features remaining after VIF filter. Adjust variable selection.")
-        return None
+        granger_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
+        granger_train = granger_merged[granger_merged["closeDate"] <= pd.to_datetime(train_end)]
 
-    # ---- Granger Causality ----
-    st.markdown("#### Granger Causality Tests")
-    st.markdown("Does each macro feature **Granger-cause** the spread? Tested on training data with up to 10 lags.")
+        granger_results = run_granger_tests(
+            granger_train["spread"],
+            granger_train,
+            feature_cols,
+            max_lag=10,
+        )
+        st.dataframe(granger_results, hide_index=True)
 
-    granger_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
-    granger_train = granger_merged[granger_merged["closeDate"] <= pd.to_datetime(train_end)]
-
-    granger_results = run_granger_tests(
-        granger_train["spread"],
-        granger_train,
-        feature_cols,
-        max_lag=10,
-    )
-    st.dataframe(granger_results, hide_index=True)
-
-    n_significant = (granger_results["Significant (5%)"] == "✓").sum()
-    st.caption(f"{n_significant} of {len(granger_results)} features are significant at 5%.")
+        n_significant = (granger_results["Significant (5%)"] == "✓").sum()
+        st.caption(f"{n_significant} of {len(granger_results)} features are significant at 5%.")
 
     st.divider()
 
@@ -398,14 +395,12 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
     fig_res.update_layout(title="Macro Residual (Spread − Fair Value)", yaxis_tickformat=".2%", height=350)
     st.plotly_chart(fig_res)
 
-    # ---- Cointegration ----
     st.markdown("#### Cointegration Test (Engle-Granger)")
-    st.markdown("If the macro residual is stationary, the spread and macro drivers are **cointegrated** — mean reversion is structurally justified.")
+    st.markdown("If the macro residual is stationary, the spread and macro drivers are **cointegrated** - mean reversion is structurally justified.")
 
     resid_stats = stationarity_table(result_df["macro_residual"].dropna(), name="Macro Residual")
     st.dataframe(resid_stats, hide_index=True)
 
-    # Engle-Granger on training levels
     eg_merged = spread_df.merge(features_df, on="closeDate", how="inner").dropna()
     eg_train = eg_merged[eg_merged["closeDate"] <= pd.to_datetime(train_end)]
 
@@ -413,14 +408,17 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
         eg_result = run_engle_granger(eg_train["spread"], eg_train[feature_cols])
         col_stat, col_verdict = st.columns([0.5, 0.5])
         with col_stat:
-            st.metric("EG Test Statistic", f"{eg_result['stat']:.4f}")
-            st.metric("p-value", f"{eg_result['pvalue']:.4f}")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("EG Test Statistic", f"{eg_result['stat']:.4f}")
+            with c2:
+                st.metric("p-value", f"{eg_result['pvalue']:.4f}")
         with col_verdict:
             if eg_result["pvalue"] < 0.05:
-                st.success("Evidence of cointegration at 5% — mean reversion of the macro residual is statistically supported.")
+                st.markdown("Evidence of cointegration at 5% - mean reversion of the macro residual is statistically supported.")
             elif eg_result["pvalue"] < 0.10:
-                st.warning("Weak evidence of cointegration (10% level). Proceed with caution.")
+                st.markdown("Weak evidence of cointegration (10% level). Proceed with caution.")
             else:
-                st.error("No evidence of cointegration. Mean reversion may be spurious.")
+                st.markdown("No evidence of cointegration. Mean reversion may be spurious.")
 
     return result_df
