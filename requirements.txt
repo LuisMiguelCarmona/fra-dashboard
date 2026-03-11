@@ -6,3 +6,4 @@ altair<5
 scikit-learn
 statsmodels
 scipy
+openpyxl
