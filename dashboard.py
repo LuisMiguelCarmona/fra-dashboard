@@ -17,12 +17,12 @@ MACRO_FACTORS = ['cds1y','cds2y','cds5y','cds10y','us10y','usdbrl']
 
 
 def load_all_data():
-    spot1y  = load_json(r"data\Spot1y.json")
-    spot2y  = load_json(r"data\Spot2y.json")
-    spot5y  = load_json(r"data\Spot5y.json")
-    spot10y = load_json(r"data\Spot10y.json")
-    fra1y1y = load_json(r"data\1y1y.json")
-    fra5y5y = load_json(r"data\5y5y.json")
+    spot1y  = load_json(r"data/Spot1y.json")
+    spot2y  = load_json(r"data/Spot2y.json")
+    spot5y  = load_json(r"data/Spot5y.json")
+    spot10y = load_json(r"data/Spot10y.json")
+    fra1y1y = load_json(r"data/1y1y.json")
+    fra5y5y = load_json(r"data/5y5y.json")
 
     nominal_curve  = build_nominal_curve_df(spot1y, spot2y, spot5y, spot10y)
     inflation_curve = build_inflation_curve_df(spot1y, spot2y, spot5y, spot10y)
@@ -33,7 +33,7 @@ def load_all_data():
     macro_df = macro_df.merge(inflation_curve,on="closeDate", how="left")
 
     try:
-        copom_df = load_copom_sentiment(r"data\copom_regime_classification.json")
+        copom_df = load_copom_sentiment(r"data/copom_regime_classification.json")
     except Exception as e:
         copom_df = None
         st.warning(f"Could not load COPOM sentiment file: {e}")
