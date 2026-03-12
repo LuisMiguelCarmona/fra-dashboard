@@ -3,8 +3,9 @@ import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import grangercausalitytests, adfuller, coint
 from statsmodels.stats.outliers_influence import variance_inflation_factor
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
 
 
 # =================== Feature Engineering ===================
@@ -165,3 +166,105 @@ def compute_macro_residual_rolling_ridge(spread_df, features_df, feature_cols,wi
     rolling_betas = pd.DataFrame(betas_list) if betas_list else pd.DataFrame()
 
     return df, rolling_betas
+
+
+# =================== Lasso / Elastic Net ===================
+
+def compute_macro_residual_lasso(spread_df, features_df, feature_cols,train_end="2017-12-31", alpha=0.001):
+    train_end = pd.to_datetime(train_end)
+    df = spread_df.merge(
+        features_df[["closeDate"] + feature_cols],
+        on="closeDate", how="inner"
+    ).dropna().copy()
+    df["is_train"] = df["closeDate"] <= train_end
+    train = df[df["is_train"]]
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(train[feature_cols])
+    y_train = train["spread"].values
+
+    model = Lasso(alpha=alpha, fit_intercept=True, max_iter=10000)
+    model.fit(X_train, y_train)
+
+    X_full = scaler.transform(df[feature_cols])
+    df["fair_value"] = model.predict(X_full)
+    df["macro_residual"] = df["spread"] - df["fair_value"]
+
+    betas_unscaled = model.coef_ / scaler.scale_
+    betas = pd.DataFrame({
+        "Variable": feature_cols,
+        "Beta": betas_unscaled,
+        "Selected": betas_unscaled != 0,
+    })
+
+    r2_train = r2_score(y_train, model.predict(X_train))
+
+    test = df[~df["is_train"]]
+    r2_test = np.nan
+    if len(test) > 0:
+        ss_res = ((test["spread"] - test["fair_value"]) ** 2).sum()
+        ss_tot = ((test["spread"] - test["spread"].mean()) ** 2).sum()
+        r2_test = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+    stats = {
+        "model_type": "Lasso",
+        "alpha": alpha,
+        "r2_train": r2_train,
+        "r2_test": r2_test,
+        "n_selected": (betas_unscaled != 0).sum(),
+        "n_features": len(feature_cols),
+    }
+
+    return df, betas, stats
+
+
+def compare_regularization_models(spread_df, features_df, feature_cols,
+                                   train_end="2017-12-31"):
+    """Compare OLS, Ridge, Lasso, ElasticNet side by side."""
+    train_end_dt = pd.to_datetime(train_end)
+    df = spread_df.merge(
+        features_df[["closeDate"] + feature_cols],
+        on="closeDate", how="inner"
+    ).dropna().copy()
+
+    train = df[df["closeDate"] <= train_end_dt]
+    test = df[df["closeDate"] > train_end_dt]
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(train[feature_cols])
+    y_train = train["spread"].values
+    X_test = scaler.transform(test[feature_cols]) if len(test) > 0 else None
+    y_test = test["spread"].values if len(test) > 0 else None
+
+    models = {
+        "OLS": Ridge(alpha=1e-10, fit_intercept=True),
+        "Ridge (α=1)": Ridge(alpha=1.0, fit_intercept=True),
+        "Ridge (α=10)": Ridge(alpha=10.0, fit_intercept=True),
+        "Lasso (α=0.001)": Lasso(alpha=0.001, fit_intercept=True, max_iter=10000),
+        "ElasticNet (α=0.001)": ElasticNet(alpha=0.001, l1_ratio=0.5, fit_intercept=True, max_iter=10000),
+    }
+
+    results = []
+    for name, model in models.items():
+        model.fit(X_train, y_train)
+        r2_train = r2_score(y_train, model.predict(X_train))
+
+        r2_test_val = np.nan
+        if X_test is not None and len(X_test) > 0:
+            y_pred_test = model.predict(X_test)
+            ss_res = ((y_test - y_pred_test) ** 2).sum()
+            ss_tot = ((y_test - y_test.mean()) ** 2).sum()
+            r2_test_val = 1 - ss_res / ss_tot if ss_tot > 0 else np.nan
+
+        coefs = model.coef_ / scaler.scale_ if hasattr(model, 'coef_') else np.zeros(len(feature_cols))
+        n_nonzero = (np.abs(coefs) > 1e-10).sum()
+
+        results.append({
+            "Model": name,
+            "R² Train": r2_train,
+            "R² Test (OOS)": r2_test_val,
+            "Non-zero Coefs": n_nonzero,
+            "Total Features": len(feature_cols),
+        })
+
+    return pd.DataFrame(results)

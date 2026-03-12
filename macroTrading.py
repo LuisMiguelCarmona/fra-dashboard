@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from clustering import compute_regime_zscore
 from tradingPCA import compute_trading_signal_regime, run_backtest, build_trade_log, compute_performance_metrics
+from validation import run_monte_carlo, compute_stress_test, compute_position_attribution
 
 TRAINING_DATE = pd.to_datetime("2017-12-31")
 
@@ -298,6 +299,102 @@ def _render_trading_block(regime_df, train_end, suffix):
     else:
         st.info("No trades generated with current parameters.")
 
+    # =================== Position Attribution ===================
+    st.divider()
+    st.subheader("Position-Level P&L Attribution")
+    st.markdown("Decomposing performance by direction reveals whether alpha comes from long, short, or is symmetric.")
+    attrib_df = compute_position_attribution(backtest_df)
+    if len(attrib_df) > 0:
+        display_attrib = attrib_df.copy()
+        for col in ["Gross P&L (bps)", "Slippage (bps)", "Roll Cost (bps)", "Net P&L (bps)"]:
+            display_attrib[col] = display_attrib[col].map(lambda x: f"{x:.1f}")
+        display_attrib["% of Sample"] = display_attrib["% of Sample"].map(lambda x: f"{x:.1f}%")
+        display_attrib["Hit Rate"] = display_attrib["Hit Rate"].map(lambda x: f"{x:.1%}" if not np.isnan(x) else "—")
+        st.dataframe(display_attrib, hide_index=True)
+
+    # =================== Stress Test ===================
+    st.divider()
+    st.subheader("Stress Test — Key Market Episodes")
+    st.markdown("How does the strategy perform during known crisis and regime-change periods?")
+    stress_df = compute_stress_test(backtest_df, trade_log)
+    if len(stress_df) > 0:
+        display_stress = stress_df.copy()
+        for col in ["Total P&L (bps)", "Ann. Return (bps)", "Ann. Vol (bps)", "Max DD (bps)"]:
+            if col in display_stress.columns:
+                display_stress[col] = display_stress[col].map(lambda x: f"{x:.1f}" if not np.isnan(x) else "—")
+        display_stress["Sharpe"] = display_stress["Sharpe"].map(lambda x: f"{x:.2f}" if not np.isnan(x) else "—")
+        display_stress["Hit Rate"] = display_stress["Hit Rate"].map(lambda x: f"{x:.1%}" if not np.isnan(x) else "—")
+        display_stress["% Active"] = display_stress["% Active"].map(lambda x: f"{x:.1f}%")
+        st.dataframe(display_stress.drop(columns=["Start", "End"]), hide_index=True)
+    else:
+        st.info("No stress periods overlap with backtest data.")
+
+    # =================== Monte Carlo Validation ===================
+    st.divider()
+    st.subheader("Signal Validation — Monte Carlo Simulation")
+    st.markdown("""
+    To test whether the macro signal contains genuine predictive information, we construct a **directional random walk null model**.
+    The procedure preserves the complete execution infrastructure (slippage, roll costs) while replacing only the signal direction
+    with random draws from {−1, 0, +1} using the same empirical frequency. Repeated **500 times**.
+    """)
+
+    if st.button("Run Monte Carlo (500 sims)", key=f"mc_btn_{suffix}"):
+        with st.spinner("Running 500 Monte Carlo simulations..."):
+            def _bt_func(sig):
+                return run_backtest(
+                    sig, slippage_bps=slippage_bps,
+                    roll_freq=roll_freq, roll_cost_bps=roll_cost_bps,
+                    train_end=train_end,
+                )
+
+            mc_result = run_monte_carlo(signal_df, _bt_func, n_sims=500)
+
+        col_mc1, col_mc2 = st.columns([0.4, 0.6])
+
+        with col_mc1:
+            st.markdown("**Results**")
+            mc_data = {
+                "Metric": ["Real Model Sharpe", "MC Mean Sharpe", "MC 5th–95th Pct",
+                           "Percentile", "Z-Score"],
+                "Value": [
+                    f"{mc_result['real_sharpe']:.3f}",
+                    f"{mc_result['mc_mean']:.3f}",
+                    f"[{mc_result['mc_5th']:.3f}, {mc_result['mc_95th']:.3f}]",
+                    f"{mc_result['percentile']:.1f}%",
+                    f"{mc_result['z_score']:.2f}σ",
+                ],
+            }
+            st.dataframe(pd.DataFrame(mc_data), hide_index=True)
+
+            if mc_result["percentile"] >= 95:
+                st.success(f"Signal validated: real model at {mc_result['percentile']:.1f}th percentile of random strategies.")
+            elif mc_result["percentile"] >= 75:
+                st.warning(f"Moderate evidence: {mc_result['percentile']:.1f}th percentile.")
+            else:
+                st.error(f"Weak evidence: {mc_result['percentile']:.1f}th percentile.")
+
+        with col_mc2:
+            fig_mc = go.Figure()
+            fig_mc.add_trace(go.Histogram(
+                x=mc_result["mc_sharpes"], nbinsx=40,
+                name="Random Walks", marker_color="steelblue", opacity=0.7,
+            ))
+            fig_mc.add_vline(
+                x=mc_result["real_sharpe"], line_dash="dash", line_color="red",
+                annotation_text=f"Real Model ({mc_result['real_sharpe']:.3f})",
+                annotation_position="top right",
+            )
+            fig_mc.add_vline(
+                x=mc_result["mc_mean"], line_dash="dot", line_color="gray",
+                annotation_text=f"MC Mean ({mc_result['mc_mean']:.3f})",
+                annotation_position="top left",
+            )
+            fig_mc.update_layout(
+                title="Monte Carlo Sharpe Distribution (500 sims)",
+                xaxis_title="Sharpe Ratio", yaxis_title="Frequency", height=400,
+            )
+            st.plotly_chart(fig_mc)
+
     return backtest_df, signal_df
 
 
@@ -357,5 +454,3 @@ def render(result_df, inflation_curve, spread_df, copom_df, train_end="2017-12-3
         _render_trading_block(regime_df, train_end, suffix="copom")
 
         st.divider()
-
-        

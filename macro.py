@@ -5,6 +5,14 @@ from macroAnalysis import (
     run_engle_granger,
     compute_macro_residual_ols,
     compute_macro_residual_rolling_ridge,
+    compare_regularization_models,
+)
+from validation import (
+    walk_forward_backtest,
+    run_zivot_andrews,
+    run_chow_test,
+    compute_rolling_ols_stability,
+    time_series_cv,
 )
 from stationarity import stationarity_table
 import streamlit as st
@@ -313,7 +321,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
 
     model_type = st.radio(
         "Model",
-        ["Static OLS (train/test split)", "Rolling Ridge (walk-forward)"],
+        ["Static OLS (train/test split)", "Rolling Ridge (walk-forward)", "Walk-Forward Expanding Window"],
         horizontal=True,
         key="macro_model_type",
     )
@@ -347,7 +355,7 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
             fig.update_layout(title="Actual Spread vs Macro Fair Value", yaxis_tickformat=".2%", height=400)
             st.plotly_chart(fig)
 
-    else:  # Rolling Ridge
+    elif model_type == "Rolling Ridge (walk-forward)":
         ctrl1, ctrl2 = st.columns(2)
         with ctrl1:
             window = st.slider("Rolling window (business days)", 252, 756, 504, 63, key="macro_ridge_window")
@@ -383,6 +391,49 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
                 fig_betas.add_trace(go.Scatter(x=rolling_betas["closeDate"], y=rolling_betas[col], mode="lines", name=col))
             fig_betas.update_layout(title="Rolling Ridge Betas Over Time", height=350)
             st.plotly_chart(fig_betas)
+
+    else:  # Walk-Forward Expanding Window
+        ctrl1, ctrl2, ctrl3 = st.columns(3)
+        with ctrl1:
+            wf_initial = st.slider("Initial training (days)", 252, 756, 504, 63, key="wf_initial")
+        with ctrl2:
+            wf_step = st.slider("Refit step (days)", 21, 126, 63, 21, key="wf_step")
+        with ctrl3:
+            wf_model = st.selectbox("Model", ["ridge", "lasso", "elasticnet", "ols"], key="wf_model")
+
+        with st.spinner("Running Walk-Forward backtest..."):
+            result_df, fold_df = walk_forward_backtest(
+                spread_df, features_df, feature_cols,
+                initial_train=wf_initial, step=wf_step,
+                model_type=wf_model,
+            )
+
+        # Rename for downstream compatibility
+        result_df["fair_value"] = result_df["wf_fair_value"]
+        result_df["macro_residual"] = result_df["wf_residual"]
+
+        col_l, col_r = st.columns([0.35, 0.65])
+        with col_l:
+            st.markdown("**Walk-Forward Fold Metrics**")
+            display_folds = fold_df.copy()
+            display_folds["oos_start"] = display_folds["oos_start"].dt.date
+            display_folds["oos_end"] = display_folds["oos_end"].dt.date
+            display_folds["r2_train"] = display_folds["r2_train"].map(lambda x: f"{x:.4f}")
+            display_folds["r2_oos"] = display_folds["r2_oos"].map(lambda x: f"{x:.4f}" if not np.isnan(x) else "N/A")
+            st.dataframe(
+                display_folds[["fold", "oos_start", "oos_end", "train_size", "r2_train", "r2_oos"]],
+                hide_index=True, height=300,
+            )
+
+            avg_oos_r2 = fold_df["r2_oos"].dropna().mean()
+            st.metric("Avg OOS R²", f"{avg_oos_r2:.4f}")
+
+        with col_r:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["spread"], mode="lines", name="Actual Spread"))
+            fig.add_trace(go.Scatter(x=result_df["closeDate"], y=result_df["fair_value"], mode="lines", name="Walk-Forward Fair Value"))
+            fig.update_layout(title="Actual Spread vs Walk-Forward Fair Value (True OOS)", yaxis_tickformat=".2%", height=400)
+            st.plotly_chart(fig)
 
     # ---- Macro Residual ----
     st.markdown("#### Macro Residual")
@@ -422,5 +473,112 @@ def render_model(macro_df, spread_df, inflation_curve, train_end="2017-12-31"):
                 st.markdown("Weak evidence of cointegration (10% level). Proceed with caution.")
             else:
                 st.markdown("No evidence of cointegration. Mean reversion may be spurious.")
+
+    # =================== Advanced Validation (Expandable) ===================
+    st.divider()
+    st.subheader("Advanced Validation")
+
+    with st.expander("📊 Regularization Comparison (OLS vs Ridge vs Lasso vs ElasticNet)", expanded=False):
+        st.markdown("Compare model performance and feature selection across regularization methods.")
+        with st.spinner("Comparing models..."):
+            reg_comparison = compare_regularization_models(
+                spread_df, features_df, feature_cols, train_end=train_end,
+            )
+        display_reg = reg_comparison.copy()
+        display_reg["R² Train"] = display_reg["R² Train"].map(lambda x: f"{x:.4f}")
+        display_reg["R² Test (OOS)"] = display_reg["R² Test (OOS)"].map(lambda x: f"{x:.4f}" if not np.isnan(x) else "N/A")
+        st.dataframe(display_reg, hide_index=True)
+        st.caption("Lasso performs automatic feature selection (Non-zero Coefs < Total). Ridge and ElasticNet shrink but retain all features.")
+
+    with st.expander("🔄 Rolling Parameter Stability (HAC Standard Errors)", expanded=False):
+        st.markdown("""
+        Rolling OLS with **Newey-West (HAC) standard errors** shows whether macro betas are stable over time.
+        Unstable betas suggest regime-dependent relationships — a key concern for any macro quant model.
+        """)
+        with st.spinner("Computing rolling OLS stability..."):
+            stability_df = compute_rolling_ols_stability(
+                spread_df, features_df, feature_cols, window=504, step=21,
+            )
+        if len(stability_df) > 0:
+            beta_cols_stab = [c for c in stability_df.columns if c.startswith("beta_")]
+            tstat_cols_stab = [c for c in stability_df.columns if c.startswith("tstat_")]
+
+            fig_stab = go.Figure()
+            for col in beta_cols_stab:
+                fig_stab.add_trace(go.Scatter(
+                    x=stability_df["closeDate"], y=stability_df[col],
+                    mode="lines", name=col.replace("beta_", ""),
+                ))
+            fig_stab.add_hline(y=0, line_color="lightgray", line_width=0.5)
+            fig_stab.update_layout(title="Rolling OLS Betas (HAC, 504d window)", height=400)
+            st.plotly_chart(fig_stab)
+
+            fig_tstat = go.Figure()
+            for col in tstat_cols_stab:
+                fig_tstat.add_trace(go.Scatter(
+                    x=stability_df["closeDate"], y=stability_df[col],
+                    mode="lines", name=col.replace("tstat_", ""),
+                ))
+            fig_tstat.add_hline(y=1.96, line_dash="dash", line_color="red", annotation_text="t=1.96")
+            fig_tstat.add_hline(y=-1.96, line_dash="dash", line_color="red", annotation_text="t=-1.96")
+            fig_tstat.add_hline(y=0, line_color="lightgray", line_width=0.5)
+            fig_tstat.update_layout(title="Rolling t-Statistics (significance bands at ±1.96)", height=400)
+            st.plotly_chart(fig_tstat)
+
+            fig_r2_roll = go.Figure()
+            fig_r2_roll.add_trace(go.Scatter(x=stability_df["closeDate"], y=stability_df["r2"], mode="lines", name="Rolling R²"))
+            fig_r2_roll.update_layout(title="Rolling R² (OLS, 504d window)", height=300)
+            st.plotly_chart(fig_r2_roll)
+
+    with st.expander("🔬 Structural Break Test (Zivot-Andrews)", expanded=False):
+        st.markdown("""
+        Tests whether the spread series contains a **structural break** that changes its statistical properties.
+        This is critical because forward rate spreads in Brazil are known to undergo regime changes
+        (e.g., the 2016 easing cycle, 2020 pandemic shock).
+        """)
+        spread_series = spread_df.set_index("closeDate")["spread"].dropna()
+        with st.spinner("Running Zivot-Andrews test..."):
+            za_result = run_zivot_andrews(spread_series)
+
+        if not np.isnan(za_result.get("statistic", np.nan)):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("ZA Statistic", f"{za_result['statistic']:.4f}")
+            with c2:
+                st.metric("p-value", f"{za_result['p_value']:.4f}")
+            with c3:
+                if za_result.get("break_index") is not None:
+                    break_date = spread_series.index[za_result["break_index"]]
+                    st.metric("Break Date", str(break_date.date()))
+
+            if za_result["p_value"] < 0.05:
+                st.success(f"Structural break detected at {break_date.date()}. Consider sub-period calibration or regime conditioning.")
+            else:
+                st.info("No significant structural break detected at 5% level.")
+        else:
+            st.warning(f"Zivot-Andrews test failed: {za_result.get('error', 'unknown')}")
+
+    with st.expander("📈 Time-Series Cross-Validation (K-Fold)", expanded=False):
+        st.markdown("""
+        Expanding-window time-series CV with 5 folds. Unlike simple train/test, this shows
+        how model performance evolves as training data grows — the gold standard for temporal validation.
+        """)
+        with st.spinner("Running 5-fold time-series CV..."):
+            cv_results = time_series_cv(
+                spread_df, features_df, feature_cols, n_splits=5, alpha=1.0,
+            )
+
+        if len(cv_results) > 0:
+            display_cv = cv_results.copy()
+            display_cv["train_end"] = display_cv["train_end"].dt.date
+            display_cv["test_start"] = display_cv["test_start"].dt.date
+            display_cv["test_end"] = display_cv["test_end"].dt.date
+            display_cv["r2_train"] = display_cv["r2_train"].map(lambda x: f"{x:.4f}")
+            display_cv["r2_test"] = display_cv["r2_test"].map(lambda x: f"{x:.4f}")
+            st.dataframe(display_cv, hide_index=True)
+
+            avg_cv_r2 = cv_results["r2_test"].mean()
+            std_cv_r2 = cv_results["r2_test"].std()
+            st.metric("Mean OOS R²", f"{avg_cv_r2:.4f} ± {std_cv_r2:.4f}")
 
     return result_df
