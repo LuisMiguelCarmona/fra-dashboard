@@ -3,11 +3,12 @@ import numpy as np
 import statsmodels.api as sm
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
+from config import TRAIN_END
 
 
 # =================== Residual (OLS, Ridge Train/Test) ===================
 
-def compute_residual_spread(spread_df,pca_df,train_end="2017-12-31",model_type="ols",alpha=1.0,):
+def compute_residual_spread(spread_df,pca_df,train_end=TRAIN_END,model_type="ols",alpha=1.0,):
 
     model_type = model_type.lower()
 
@@ -159,7 +160,7 @@ def compute_trading_signal_regime(df, entry_long, entry_short, exit_band, stop_l
 
 # =================== Backtest ===================
 
-def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, train_end="2017-12-31"):
+def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, train_end=TRAIN_END):
     df = signal_df.copy()
     train_end = pd.to_datetime(train_end)
 
@@ -170,15 +171,28 @@ def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, t
     df["daily_pnl"] = df["position_prev"] * df["spread_change"]
 
     slippage_per_unit = slippage_bps / 10000.0
-    df["slippage_cost"] = abs(df["position_change"]) * slippage_per_unit
+    raw_slippage = abs(df["position_change"]) * slippage_per_unit
+
+    # Fix: entry slippage (flat→active) should be charged on first ACTIVE day,
+    # not on the transition day where position_prev is still 0.
+    # This way it's attributed to the trade, not to "Flat".
+    is_entry = (df["position_prev"] == 0) & (df["position"] != 0)
+    entry_slippage = raw_slippage.where(is_entry, 0.0)
+    non_entry_slippage = raw_slippage.where(~is_entry, 0.0)
+    df["slippage_cost"] = non_entry_slippage + entry_slippage.shift(-1).fillna(0)
 
     roll_per_unit = roll_cost_bps / 10000.0
-    days_in_position = np.zeros(len(df))
+
+    days_in_position = np.zeros(len(df), dtype=int)
     roll_cost = np.zeros(len(df))
 
-    for i in range(1, len(df)):
+    for i in range(len(df)):
         if df["position_prev"].iloc[i] != 0:
-            days_in_position[i] = days_in_position[i - 1] + 1
+            if i > 0 and df["position_prev"].iloc[i - 1] != 0:
+                days_in_position[i] = days_in_position[i - 1] + 1
+            else:
+                days_in_position[i] = 1
+
             if roll_freq > 0 and days_in_position[i] % roll_freq == 0:
                 roll_cost[i] = roll_per_unit
         else:
@@ -198,7 +212,11 @@ def run_backtest(signal_df, slippage_bps=0.0, roll_freq=90, roll_cost_bps=0.0, t
 
 # =================== Trade Log ===================
 
-def build_trade_log(signal_df):
+def build_trade_log(signal_df, backtest_df=None):
+    """
+    Build trade log. If backtest_df is provided, compute net P&L per trade
+    by summing daily slippage and roll costs between entry and exit.
+    """
     df = signal_df.copy().reset_index(drop=True)
     trades = []
     in_trade = False
@@ -206,6 +224,11 @@ def build_trade_log(signal_df):
 
     z_col = "regime_z" if "regime_z" in df.columns else "residual_z"
     has_regime = "regime" in df.columns
+
+    # Align backtest_df index if provided
+    bt = None
+    if backtest_df is not None:
+        bt = backtest_df.copy().reset_index(drop=True)
 
     for i in range(len(df)):
         pos = df["position"].iloc[i]
@@ -222,7 +245,18 @@ def build_trade_log(signal_df):
             pnl_col = "spread" if "spread" in df.columns else "residual_spread"
             entry_spread = df[pnl_col].iloc[entry_idx]
             exit_spread = df[pnl_col].iloc[i]
-            pnl = sign * (exit_spread - entry_spread)
+            gross_pnl = sign * (exit_spread - entry_spread)
+
+            # Compute trade costs from backtest_df
+            trade_slippage = 0.0
+            trade_roll = 0.0
+            net_pnl = gross_pnl
+            if bt is not None:
+                # Trade occupies days entry_idx to i (inclusive of exit day)
+                trade_slice = bt.iloc[entry_idx:i + 1]
+                trade_slippage = trade_slice["slippage_cost"].sum()
+                trade_roll = trade_slice["roll_cost"].sum()
+                net_pnl = gross_pnl - trade_slippage - trade_roll
 
             trade = {
                 "entry_date": df["closeDate"].iloc[entry_idx],
@@ -232,7 +266,10 @@ def build_trade_log(signal_df):
                 "exit_z": df[z_col].iloc[i],
                 "entry_spread": entry_spread,
                 "exit_spread": exit_spread,
-                "pnl": pnl,
+                "gross_pnl": gross_pnl,
+                "slippage": trade_slippage,
+                "roll_cost": trade_roll,
+                "pnl": net_pnl,
                 "holding_days": (df["closeDate"].iloc[i] - df["closeDate"].iloc[entry_idx]).days,
                 "exit_type": df["exit_type"].iloc[i] if "exit_type" in df.columns else None,
             }
@@ -290,7 +327,7 @@ def compute_performance_metrics(backtest_df, trade_log_df, annual_factor=252):
             "pnl_per_trade": pnl_per_trade,
         }
 
-    train_end = pd.to_datetime("2017-12-31")
+    train_end = pd.to_datetime(TRAIN_END)
 
     train_pnl = backtest_df.loc[backtest_df["is_train"], "net_pnl"]
     test_pnl = backtest_df.loc[~backtest_df["is_train"], "net_pnl"]

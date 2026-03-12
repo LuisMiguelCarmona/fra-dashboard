@@ -2,11 +2,12 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from config import TRAIN_END
 from clustering import compute_regime_zscore
 from tradingPCA import compute_trading_signal_regime, run_backtest, build_trade_log, compute_performance_metrics
-from validation import run_monte_carlo, compute_stress_test, compute_position_attribution
+from validation import compute_stress_test, compute_position_attribution, block_bootstrap_sharpe
 
-TRAINING_DATE = pd.to_datetime("2017-12-31")
+TRAINING_DATE = pd.to_datetime(TRAIN_END)
 
 REGIME_LABELS = {0: "Tightening", 1: "Easing", 2: "Transitional"}
 REGIME_COLORS_BG = {
@@ -16,7 +17,7 @@ REGIME_COLORS_BG = {
 }
 
 
-def classify_macro_regime(result_df, inflation_curve, train_end="2017-12-31", window=21):
+def classify_macro_regime(result_df, inflation_curve, train_end=TRAIN_END, window=21):
     df = result_df.copy()
     infl = inflation_curve[["closeDate", "Inflation_1y"]].copy()
     df = df.merge(infl, on="closeDate", how="left")
@@ -63,7 +64,7 @@ def _render_copom_inspector(copom_df):
 
     with st.expander("Key Passages from Minutes", expanded=False):
         for i, passage in enumerate(meeting["key_passages"], 1):
-            st.markdown(f"**{i}.** _{passage}_")
+            st.markdown(f"{i}.** _{passage}_")
 
 
 def _render_trading_block(regime_df, train_end, suffix):
@@ -227,7 +228,7 @@ def _render_trading_block(regime_df, train_end, suffix):
     st.plotly_chart(fig_dd)
 
     st.subheader("Performance Metrics")
-    trade_log = build_trade_log(signal_df)
+    trade_log = build_trade_log(signal_df, backtest_df=backtest_df)
     metrics = compute_performance_metrics(backtest_df, trade_log)
 
     def _fmt(val, fmt_type="f2"):
@@ -286,7 +287,10 @@ def _render_trading_block(regime_df, train_end, suffix):
         display_log = trade_log.copy()
         display_log["entry_date"] = display_log["entry_date"].dt.date
         display_log["exit_date"]  = display_log["exit_date"].dt.date
-        display_log["pnl_bps"]    = (display_log["pnl"] * 10000).round(2)
+        display_log["gross_bps"]  = (display_log["gross_pnl"] * 10000).round(2)
+        display_log["slip_bps"]   = (display_log["slippage"] * 10000).round(2)
+        display_log["roll_bps"]   = (display_log["roll_cost"] * 10000).round(2)
+        display_log["net_bps"]    = (display_log["pnl"] * 10000).round(2)
         display_log["entry_z"]    = display_log["entry_z"].round(3)
         display_log["exit_z"]     = display_log["exit_z"].round(3)
         if "entry_regime" in display_log.columns:
@@ -294,7 +298,7 @@ def _render_trading_block(regime_df, train_end, suffix):
         show_cols = ["entry_date", "exit_date", "direction"]
         if "regime_label" in display_log.columns:
             show_cols.append("regime_label")
-        show_cols += ["entry_z", "exit_z", "pnl_bps", "holding_days", "exit_type"]
+        show_cols += ["entry_z", "exit_z", "gross_bps", "slip_bps", "roll_bps", "net_bps", "holding_days", "exit_type"]
         st.dataframe(display_log[show_cols], hide_index=True)
     else:
         st.info("No trades generated with current parameters.")
@@ -325,81 +329,148 @@ def _render_trading_block(regime_df, train_end, suffix):
         display_stress["Sharpe"] = display_stress["Sharpe"].map(lambda x: f"{x:.2f}" if not np.isnan(x) else "—")
         display_stress["Hit Rate"] = display_stress["Hit Rate"].map(lambda x: f"{x:.1%}" if not np.isnan(x) else "—")
         display_stress["% Active"] = display_stress["% Active"].map(lambda x: f"{x:.1f}%")
-        st.dataframe(display_stress.drop(columns=["Start", "End"]), hide_index=True)
+        try:
+            st.dataframe(display_stress.drop(columns=["Start", "End"]), hide_index=True)
+        except:
+            st.dataframe(display_stress, hide_index=True)
     else:
         st.info("No stress periods overlap with backtest data.")
 
-    # =================== Monte Carlo Validation ===================
+    # =================== Block Bootstrap Sharpe Inference ===================
     st.divider()
-    st.subheader("Signal Validation — Monte Carlo Simulation")
+    st.subheader("Sharpe Ratio Inference — Block Bootstrap")
     st.markdown("""
-    To test whether the macro signal contains genuine predictive information, we construct a **directional random walk null model**.
-    The procedure preserves the complete execution infrastructure (slippage, roll costs) while replacing only the signal direction
-    with random draws from {−1, 0, +1} using the same empirical frequency. Repeated **500 times**.
+    Standard Sharpe ratios are point estimates with no uncertainty quantification. Because daily returns
+    exhibit **autocorrelation and volatility clustering**, naive i.i.d. bootstrap destroys the time-series structure.
+
+    **Block Bootstrap** (Politis & Romano, 1994) resamples contiguous blocks of daily P&L, preserving
+    serial dependence. This produces a **confidence interval** and a **p-value** for H₀: Sharpe ≤ 0
+    that is robust to non-normality and heteroskedasticity.
     """)
 
-    if st.button("Run Monte Carlo (500 sims)", key=f"mc_btn_{suffix}"):
-        with st.spinner("Running 500 Monte Carlo simulations..."):
-            def _bt_func(sig):
-                return run_backtest(
-                    sig, slippage_bps=slippage_bps,
-                    roll_freq=roll_freq, roll_cost_bps=roll_cost_bps,
-                    train_end=train_end,
+    col_bs_ctrl1, col_bs_ctrl2 = st.columns(2)
+    with col_bs_ctrl1:
+        n_boot = st.selectbox("Bootstrap replications", [1000, 2000, 5000, 10000], index=2, key=f"boot_n_{suffix}")
+    with col_bs_ctrl2:
+        conf_level = st.selectbox("Confidence level", [0.90, 0.95, 0.99], index=1, key=f"boot_conf_{suffix}")
+
+    if st.button("Run Block Bootstrap", key=f"boot_btn_{suffix}"):
+        with st.spinner(f"Running {n_boot:,} block bootstrap replications..."):
+            boot_result = block_bootstrap_sharpe(
+                backtest_df["net_pnl"],
+                n_bootstrap=n_boot,
+                confidence_level=conf_level,
+            )
+
+        if "error" in boot_result:
+            st.warning(boot_result["error"])
+        else:
+            col_b1, col_b2 = st.columns([0.35, 0.65])
+
+            with col_b1:
+                pct_label = f"{int(conf_level * 100)}%"
+
+                st.markdown("**Results**")
+                boot_table = pd.DataFrame({
+                    "Metric": [
+                        "Point Estimate (Sharpe)",
+                        f"{pct_label} CI Lower",
+                        f"{pct_label} CI Upper",
+                        "Bootstrap Std. Error",
+                        "p-value (H₀: Sharpe ≤ 0)",
+                        "Block Length (auto)",
+                        "Replications",
+                    ],
+                    "Value": [
+                        f"{boot_result['sharpe_point']:.4f}",
+                        f"{boot_result['ci_lower']:.4f}",
+                        f"{boot_result['ci_upper']:.4f}",
+                        f"{boot_result['se']:.4f}",
+                        f"{boot_result['p_value']:.4f}",
+                        f"{boot_result['block_length']}d",
+                        f"{n_boot:,}",
+                    ],
+                })
+                st.dataframe(boot_table, hide_index=True)
+
+                # Verdict
+                if boot_result["p_value"] < 0.01:
+                    st.success(f"Sharpe = {boot_result['sharpe_point']:.3f} [{boot_result['ci_lower']:.3f}, {boot_result['ci_upper']:.3f}] — statistically significant at 1%.")
+                elif boot_result["p_value"] < 0.05:
+                    st.success(f"Sharpe = {boot_result['sharpe_point']:.3f} [{boot_result['ci_lower']:.3f}, {boot_result['ci_upper']:.3f}] — statistically significant at 5%.")
+                elif boot_result["p_value"] < 0.10:
+                    st.warning(f"Sharpe = {boot_result['sharpe_point']:.3f} [{boot_result['ci_lower']:.3f}, {boot_result['ci_upper']:.3f}] — marginally significant at 10%.")
+                else:
+                    st.error(f"Sharpe = {boot_result['sharpe_point']:.3f} [{boot_result['ci_lower']:.3f}, {boot_result['ci_upper']:.3f}] — NOT statistically significant.")
+
+            with col_b2:
+                boot_sharpes = boot_result["bootstrap_sharpes"]
+
+                fig_boot = go.Figure()
+
+                # Histogram
+                fig_boot.add_trace(go.Histogram(
+                    x=boot_sharpes, nbinsx=60,
+                    name="Bootstrap Distribution",
+                    marker_color="rgba(99, 102, 241, 0.6)",
+                    opacity=0.8,
+                ))
+
+                # Point estimate
+                fig_boot.add_vline(
+                    x=boot_result["sharpe_point"], line_dash="solid", line_color="red", line_width=2,
+                    annotation_text=f"Point Est. ({boot_result['sharpe_point']:.3f})",
+                    annotation_position="top right",
                 )
 
-            mc_result = run_monte_carlo(signal_df, _bt_func, n_sims=500)
+                # CI bounds
+                fig_boot.add_vline(
+                    x=boot_result["ci_lower"], line_dash="dash", line_color="orange", line_width=1.5,
+                    annotation_text=f"CI Lower ({boot_result['ci_lower']:.3f})",
+                    annotation_position="bottom left",
+                )
+                fig_boot.add_vline(
+                    x=boot_result["ci_upper"], line_dash="dash", line_color="orange", line_width=1.5,
+                    annotation_text=f"CI Upper ({boot_result['ci_upper']:.3f})",
+                    annotation_position="bottom right",
+                )
 
-        col_mc1, col_mc2 = st.columns([0.4, 0.6])
+                # Zero line
+                fig_boot.add_vline(
+                    x=0, line_dash="dot", line_color="black", line_width=1,
+                    annotation_text="Sharpe = 0",
+                    annotation_position="top left",
+                )
 
-        with col_mc1:
-            st.markdown("**Results**")
-            mc_data = {
-                "Metric": ["Real Model Sharpe", "MC Mean Sharpe", "MC 5th–95th Pct",
-                           "Percentile", "Z-Score"],
-                "Value": [
-                    f"{mc_result['real_sharpe']:.3f}",
-                    f"{mc_result['mc_mean']:.3f}",
-                    f"[{mc_result['mc_5th']:.3f}, {mc_result['mc_95th']:.3f}]",
-                    f"{mc_result['percentile']:.1f}%",
-                    f"{mc_result['z_score']:.2f}σ",
-                ],
-            }
-            st.dataframe(pd.DataFrame(mc_data), hide_index=True)
+                # Shade CI region
+                fig_boot.add_vrect(
+                    x0=boot_result["ci_lower"], x1=boot_result["ci_upper"],
+                    fillcolor="rgba(255, 165, 0, 0.08)", line_width=0,
+                    annotation_text=f"{pct_label} CI", annotation_position="top left",
+                )
 
-            if mc_result["percentile"] >= 95:
-                st.success(f"Signal validated: real model at {mc_result['percentile']:.1f}th percentile of random strategies.")
-            elif mc_result["percentile"] >= 75:
-                st.warning(f"Moderate evidence: {mc_result['percentile']:.1f}th percentile.")
-            else:
-                st.error(f"Weak evidence: {mc_result['percentile']:.1f}th percentile.")
+                fig_boot.update_layout(
+                    title=f"Block Bootstrap Sharpe Distribution ({n_boot:,} replications, block={boot_result['block_length']}d)",
+                    xaxis_title="Annualized Sharpe Ratio",
+                    yaxis_title="Frequency",
+                    height=450,
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_boot)
 
-        with col_mc2:
-            fig_mc = go.Figure()
-            fig_mc.add_trace(go.Histogram(
-                x=mc_result["mc_sharpes"], nbinsx=40,
-                name="Random Walks", marker_color="steelblue", opacity=0.7,
-            ))
-            fig_mc.add_vline(
-                x=mc_result["real_sharpe"], line_dash="dash", line_color="red",
-                annotation_text=f"Real Model ({mc_result['real_sharpe']:.3f})",
-                annotation_position="top right",
-            )
-            fig_mc.add_vline(
-                x=mc_result["mc_mean"], line_dash="dot", line_color="gray",
-                annotation_text=f"MC Mean ({mc_result['mc_mean']:.3f})",
-                annotation_position="top left",
-            )
-            fig_mc.update_layout(
-                title="Monte Carlo Sharpe Distribution (500 sims)",
-                xaxis_title="Sharpe Ratio", yaxis_title="Frequency", height=400,
-            )
-            st.plotly_chart(fig_mc)
+                # Additional context
+                st.caption(
+                    f"Block length of {boot_result['block_length']} days preserves autocorrelation and "
+                    f"GARCH-type volatility clustering in the P&L series. "
+                    f"Unlike standard bootstrap, this correctly accounts for time-series dependence "
+                    f"when constructing confidence intervals."
+                )
 
     return backtest_df, signal_df
 
 
 
-def render(result_df, inflation_curve, spread_df, copom_df, train_end="2017-12-31"):
+def render(result_df, inflation_curve, spread_df, copom_df, train_end=TRAIN_END):
     if result_df is None or "macro_residual" not in result_df.columns:
         st.warning("Run the Macro Fair Value model first.")
         return
@@ -427,7 +498,7 @@ def render(result_df, inflation_curve, spread_df, copom_df, train_end="2017-12-3
         st.subheader("Macro Regime — Inflation Momentum")
         st.markdown("""
         **Rule-based** regime using inflation expectations momentum (21-day change):
-        - **Tightening**: inflation rising → short-end reprices up → spread compresses
+        - Tightening**: inflation rising → short-end reprices up → spread compresses
         - **Easing**: inflation falling → short-end drops → spread widens
         - **Transitional**: no clear direction — avoid trading
         """)
@@ -439,7 +510,7 @@ def render(result_df, inflation_curve, spread_df, copom_df, train_end="2017-12-3
     else:
         st.subheader("Macro Regime — COPOM Sentiment Analysis")
         st.markdown("""
-        Regime assigned from **NLP classification of COPOM meeting minutes**.
+        Regime assigned from NLP classification of COPOM meeting minutes**.
         Each meeting's regime is forward-filled until the next meeting.
         - **Tightening**: hawkish bias — no space for easing, upside inflation risks
         - **Easing**: dovish bias — room for cuts, inflation converging to target

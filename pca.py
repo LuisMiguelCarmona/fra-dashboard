@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+from config import TRAIN_END
 from tradingPCA import (compute_trading_signal,compute_residual_spread,compute_trading_signal_regime,run_backtest,build_trade_log,compute_performance_metrics)
+from validation import block_bootstrap_sharpe
 import stationarity
 import clustering
 
@@ -197,9 +199,9 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
 
     # =================== Residual ===================
     st.subheader(f"Signal Construction using PCA Arbitrage — Using Full Sample. The results bellow are not period sensitive according to the assigned period above")
-    st.caption("The results below use a fixed training period (up to 2017-12-31) and are not affected by the PCA window above.")
+    st.caption(f"The results below use a fixed training period (up to {TRAIN_END}) and are not affected by the PCA window above.")
 
-    full_pca_df, full_loadings, full_explained = run_pca(nominal_curve, train_end="2017-12-31")
+    full_pca_df, full_loadings, full_explained = run_pca(nominal_curve, train_end=TRAIN_END)
     full_pca_df = add_rolling_zscore(full_pca_df, cols=["Level", "Slope", "Curvature"])
 
     col_model, col_alpha = st.columns([0.4, 0.6])
@@ -215,7 +217,7 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
 
 
     st.subheader(f"Residual Spread ({startdate} to {enddate})")
-    st.caption("The fair spread is estimated with OLS fitted only on the training sample up to 2017-12-31, then applied to the full sample.")
+    st.caption(f"The fair spread is estimated with OLS fitted only on the training sample up to {TRAIN_END}, then applied to the full sample.")
 
     latex = r"""
     Residual Spread:
@@ -264,7 +266,7 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
     regime_df = regime_df.dropna().reset_index(drop=True)
 
     st.subheader(f"Regime Analysis ({startdate} to {enddate})")
-    st.markdown("Lets cluster the regimes using 2 different models, Gaussian Mixture Model (GMM) and K-means")
+    st.markdown("Cluster the regimes using Gaussian Mixture Model (GMM) or K-means.")
 
     left_regime, right_regime = st.columns([0.5, 0.5])
     with left_regime:
@@ -349,7 +351,7 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
     st.markdown("Now, lets trade the residual using different z-score of each regime. This is important so we can analyse each period characteristics.")
 
     trade_input = regime_df[["closeDate", "regime", "spread", "residual_spread"]].copy()
-    trade_input, regime_stats = clustering.compute_regime_zscore(trade_input, train_end="2017-12-31")
+    trade_input, regime_stats = clustering.compute_regime_zscore(trade_input, train_end=TRAIN_END)
 
     st.markdown("Residual distribution per regime (training sample)")
     display_stats = regime_stats.copy()
@@ -428,7 +430,7 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
     st.plotly_chart(fig_signal)
 
     # Backtest
-    backtest_df = run_backtest(signal_df, slippage_bps=slippage_bps, roll_freq=roll_freq, roll_cost_bps=roll_cost_bps, train_end="2017-12-31")
+    backtest_df = run_backtest(signal_df, slippage_bps=slippage_bps, roll_freq=roll_freq, roll_cost_bps=roll_cost_bps, train_end=TRAIN_END)
 
     # Position + Regime chart
     fig_pos = go.Figure()
@@ -483,7 +485,7 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
 
     # Performance Metrics
     st.subheader("Performance Metrics")
-    trade_log = build_trade_log(signal_df)
+    trade_log = build_trade_log(signal_df, backtest_df=backtest_df)
     metrics = compute_performance_metrics(backtest_df, trade_log)
 
     def _fmt(val, fmt_type="f2"):
@@ -517,6 +519,29 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
         })
     st.dataframe(pd.DataFrame(perf_data), hide_index=True)
 
+    # Block Bootstrap Sharpe Inference
+    with st.expander("📊 Block Bootstrap Sharpe Inference (Politis & Romano, 1994)", expanded=False):
+        st.markdown("Confidence interval for Sharpe ratio that accounts for autocorrelation and volatility clustering in P&L.")
+        if st.button("Run Block Bootstrap (5000 reps)", key="pca_boot_btn"):
+            with st.spinner("Running block bootstrap..."):
+                boot_result = block_bootstrap_sharpe(backtest_df["net_pnl"], n_bootstrap=5000)
+            if "error" not in boot_result:
+                col_b1, col_b2 = st.columns([0.4, 0.6])
+                with col_b1:
+                    st.metric("Sharpe (point)", f"{boot_result['sharpe_point']:.4f}")
+                    st.metric("95% CI", f"[{boot_result['ci_lower']:.4f}, {boot_result['ci_upper']:.4f}]")
+                    st.metric("p-value (H₀: Sharpe ≤ 0)", f"{boot_result['p_value']:.4f}")
+                    st.metric("Block Length", f"{boot_result['block_length']}d")
+                with col_b2:
+                    fig_boot = go.Figure()
+                    fig_boot.add_trace(go.Histogram(x=boot_result["bootstrap_sharpes"], nbinsx=50, marker_color="rgba(99,102,241,0.6)"))
+                    fig_boot.add_vline(x=boot_result["sharpe_point"], line_dash="solid", line_color="red", line_width=2)
+                    fig_boot.add_vline(x=boot_result["ci_lower"], line_dash="dash", line_color="orange")
+                    fig_boot.add_vline(x=boot_result["ci_upper"], line_dash="dash", line_color="orange")
+                    fig_boot.add_vline(x=0, line_dash="dot", line_color="black")
+                    fig_boot.update_layout(title="Block Bootstrap Sharpe Distribution", xaxis_title="Sharpe", height=350)
+                    st.plotly_chart(fig_boot)
+
     st.subheader("Monthly P&L Heatmap")
     monthly = backtest_df.copy()
     monthly["year"] = monthly["closeDate"].dt.year
@@ -543,10 +568,13 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
         display_log = trade_log.copy()
         display_log["entry_date"] = display_log["entry_date"].dt.date
         display_log["exit_date"] = display_log["exit_date"].dt.date
-        display_log["pnl_bps"] = (display_log["pnl"] * 10000).round(2)
+        display_log["gross_bps"] = (display_log["gross_pnl"] * 10000).round(2)
+        display_log["slip_bps"]  = (display_log["slippage"] * 10000).round(2)
+        display_log["roll_bps"]  = (display_log["roll_cost"] * 10000).round(2)
+        display_log["net_bps"]   = (display_log["pnl"] * 10000).round(2)
         display_log["entry_z"] = display_log["entry_z"].round(3)
         display_log["exit_z"] = display_log["exit_z"].round(3)
-        show_cols = ["entry_date", "exit_date", "direction", "entry_z", "exit_z", "pnl_bps", "holding_days", "exit_type"]
+        show_cols = ["entry_date", "exit_date", "direction", "entry_z", "exit_z", "gross_bps", "slip_bps", "roll_bps", "net_bps", "holding_days", "exit_type"]
         if "entry_regime" in display_log.columns:
             show_cols.insert(3, "entry_regime")
         st.dataframe(display_log[show_cols], hide_index=True)

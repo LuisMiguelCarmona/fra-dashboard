@@ -1,3 +1,4 @@
+from config import TRAIN_END
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
@@ -5,7 +6,7 @@ import pandas as pd
 
 # =================== K-means & GMM ===================
 
-def run_regime_model(df, feature_cols, model_type="gmm", n_regimes=3, train_end="2017-12-31", random_state=42):
+def run_regime_model(df, feature_cols, model_type="gmm", n_regimes=3, train_end=TRAIN_END, random_state=42):
     out = df.copy()
     train_end = pd.to_datetime(train_end)
 
@@ -54,7 +55,7 @@ def run_regime_model(df, feature_cols, model_type="gmm", n_regimes=3, train_end=
 
 # =================== Regime Z-Score ===================
 
-def compute_regime_zscore(regime_df, train_end="2017-12-31"):
+def compute_regime_zscore(regime_df, train_end=TRAIN_END):
     df = regime_df.copy()
     train_end = pd.to_datetime(train_end)
     train = df[df["closeDate"] <= train_end]

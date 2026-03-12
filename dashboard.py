@@ -3,6 +3,7 @@ import pandas as pd
 import os
 
 from data_loader import load_json, build_nominal_curve_df, build_inflation_curve_df, spread_fra, build_macro_df, load_copom_sentiment
+from config import TRAIN_END
 import curveEvolution
 import stationarity
 import pca
@@ -12,8 +13,7 @@ import macroTrading
 
 st.set_page_config(page_title="FRA Spreads Dashboard", layout="wide")
 
-TRAIN_END = "2017-12-31"
-MACRO_FACTORS = ['cds1y','cds2y','cds5y','cds10y','us10y','usdbrl']
+MACRO_FACTORS = ['cds1y','cds2y','cds5y','cds10y','us10y','usdbrl','vix']
 
 
 def load_all_data():
