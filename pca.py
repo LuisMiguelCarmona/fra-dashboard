@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 import streamlit as st
 from config import TRAIN_END
 from tradingPCA import (compute_trading_signal,compute_residual_spread,compute_trading_signal_regime,run_backtest,build_trade_log,compute_performance_metrics)
-from validation import block_bootstrap_sharpe
 import stationarity
 import clustering
 
@@ -518,29 +517,6 @@ def render(nominal_curve, spread_df, TRAINING_DATE):
             "Test": _fmt(metrics["test"].get(key), fmt),
         })
     st.dataframe(pd.DataFrame(perf_data), hide_index=True)
-
-    # Block Bootstrap Sharpe Inference
-    with st.expander("📊 Block Bootstrap Sharpe Inference (Politis & Romano, 1994)", expanded=False):
-        st.markdown("Confidence interval for Sharpe ratio that accounts for autocorrelation and volatility clustering in P&L.")
-        if st.button("Run Block Bootstrap (5000 reps)", key="pca_boot_btn"):
-            with st.spinner("Running block bootstrap..."):
-                boot_result = block_bootstrap_sharpe(backtest_df["net_pnl"], n_bootstrap=5000)
-            if "error" not in boot_result:
-                col_b1, col_b2 = st.columns([0.4, 0.6])
-                with col_b1:
-                    st.metric("Sharpe (point)", f"{boot_result['sharpe_point']:.4f}")
-                    st.metric("95% CI", f"[{boot_result['ci_lower']:.4f}, {boot_result['ci_upper']:.4f}]")
-                    st.metric("p-value (H₀: Sharpe ≤ 0)", f"{boot_result['p_value']:.4f}")
-                    st.metric("Block Length", f"{boot_result['block_length']}d")
-                with col_b2:
-                    fig_boot = go.Figure()
-                    fig_boot.add_trace(go.Histogram(x=boot_result["bootstrap_sharpes"], nbinsx=50, marker_color="rgba(99,102,241,0.6)"))
-                    fig_boot.add_vline(x=boot_result["sharpe_point"], line_dash="solid", line_color="red", line_width=2)
-                    fig_boot.add_vline(x=boot_result["ci_lower"], line_dash="dash", line_color="orange")
-                    fig_boot.add_vline(x=boot_result["ci_upper"], line_dash="dash", line_color="orange")
-                    fig_boot.add_vline(x=0, line_dash="dot", line_color="black")
-                    fig_boot.update_layout(title="Block Bootstrap Sharpe Distribution", xaxis_title="Sharpe", height=350)
-                    st.plotly_chart(fig_boot)
 
     st.subheader("Monthly P&L Heatmap")
     monthly = backtest_df.copy()
